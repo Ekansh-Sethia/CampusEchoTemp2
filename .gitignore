@@ -1,0 +1,31 @@
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE & OS Files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Data artifacts & model weights
+*.pt
+*.onnx
+runs/
+data/landmarks/*.png
+data/landmarks/*.jpg
+data/landmarks/*.jpeg
+!data/landmarks/.gitkeep

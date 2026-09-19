@@ -1,0 +1,152 @@
+{
+  "metadata": {
+    "campus_name": "College Campus",
+    "version": "1.0",
+    "description": "Campus navigation graph with real college landmark measurements",
+    "measurement_notes": {
+      "golden_gate_to_atc": "58m straight + 50m left",
+      "atc_to_silveria": "13m straight + 127m right",
+      "atc_to_admin": "13m straight + 35m right (plus point) + 68m left + 151m right"
+    }
+  },
+  "nodes": [
+    {
+      "id": "golden_gate",
+      "name": "Golden Gate",
+      "type": "entrance",
+      "label": "Golden Gate (Main Gate)",
+      "expected_signs": ["GOLDEN GATE", "MAIN GATE", "COLLEGE ENTRANCE"],
+      "landmark_image": "golden_gate.jpg"
+    },
+    {
+      "id": "golden_gate_turn",
+      "name": "Golden Gate Path Turn",
+      "type": "waypoint",
+      "label": "Turn towards ATC Building",
+      "expected_signs": [],
+      "landmark_image": null
+    },
+    {
+      "id": "atc_building",
+      "name": "ATC Building",
+      "type": "building",
+      "label": "ATC Building Entrance",
+      "expected_signs": ["ATC BUILDING", "ATC", "ACADEMIC & TECHNOLOGY COMPLEX"],
+      "landmark_image": "atc_building.jpg"
+    },
+    {
+      "id": "atc_junction",
+      "name": "ATC Pathway Junction",
+      "type": "junction",
+      "label": "Junction outside ATC Building",
+      "expected_signs": ["TO SILVERIA HALL", "TO PLUS POINT"],
+      "landmark_image": null
+    },
+    {
+      "id": "plus_point",
+      "name": "Plus Point",
+      "type": "landmark",
+      "label": "Plus Point Landmark",
+      "expected_signs": ["PLUS POINT", "PLUS POINT CAFE", "CAMPUS CENTER"],
+      "landmark_image": "plus_point.jpg"
+    },
+    {
+      "id": "silveria_hall",
+      "name": "Silveria Hall",
+      "type": "hall",
+      "label": "Silveria Hall Auditorium",
+      "expected_signs": ["SILVERIA HALL", "SILVERIA", "AUDITORIUM"],
+      "landmark_image": "silveria_hall.jpg"
+    },
+    {
+      "id": "admin_path_turn",
+      "name": "Admin Path Turn",
+      "type": "waypoint",
+      "label": "Turn towards Administrative Building",
+      "expected_signs": [],
+      "landmark_image": null
+    },
+    {
+      "id": "admin_building",
+      "name": "Administrative Building",
+      "type": "building",
+      "label": "Administrative Building",
+      "expected_signs": ["ADMINISTRATIVE BUILDING", "ADMIN BLOCK", "OFFICE"],
+      "landmark_image": "admin_building.jpg"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_golden_gate_to_turn",
+      "from": "golden_gate",
+      "to": "golden_gate_turn",
+      "distance_m": 58.0,
+      "direction_forward": "straight",
+      "direction_backward": "straight",
+      "description": "Walk straight along the main avenue from Golden Gate"
+    },
+    {
+      "id": "edge_turn_to_atc",
+      "from": "golden_gate_turn",
+      "to": "atc_building",
+      "distance_m": 50.0,
+      "direction_forward": "left",
+      "direction_backward": "right",
+      "description": "Turn left and walk to ATC Building"
+    },
+    {
+      "id": "edge_atc_to_junction",
+      "from": "atc_building",
+      "to": "atc_junction",
+      "distance_m": 13.0,
+      "direction_forward": "straight",
+      "direction_backward": "straight",
+      "description": "Walk straight from ATC Building to pathway junction"
+    },
+    {
+      "id": "edge_junction_to_silveria",
+      "from": "atc_junction",
+      "to": "silveria_hall",
+      "distance_m": 127.0,
+      "direction_forward": "right",
+      "direction_backward": "left",
+      "description": "Turn right and walk to Silveria Hall"
+    },
+    {
+      "id": "edge_junction_to_plus_point",
+      "from": "atc_junction",
+      "to": "plus_point",
+      "distance_m": 35.0,
+      "direction_forward": "right",
+      "direction_backward": "left",
+      "description": "Turn right and walk to Plus Point"
+    },
+    {
+      "id": "edge_plus_point_to_admin_turn",
+      "from": "plus_point",
+      "to": "admin_path_turn",
+      "distance_m": 68.0,
+      "direction_forward": "left",
+      "direction_backward": "right",
+      "description": "Turn left from Plus Point along administrative pathway"
+    },
+    {
+      "id": "edge_admin_turn_to_admin",
+      "from": "admin_path_turn",
+      "to": "admin_building",
+      "distance_m": 151.0,
+      "direction_forward": "right",
+      "direction_backward": "left",
+      "description": "Turn right and walk straight to Administrative Building"
+    },
+    {
+      "id": "edge_plus_point_to_silveria_alternate",
+      "from": "plus_point",
+      "to": "silveria_hall",
+      "distance_m": 115.0,
+      "direction_forward": "straight",
+      "direction_backward": "straight",
+      "description": "Courtyard alternate pathway connecting Plus Point and Silveria Hall"
+    }
+  ]
+}

@@ -47,14 +47,40 @@ Each phase section documents:
 
 ## Phase 2: Real-Time Perception Loop (YOLOv8n + Distance Estimation + Walking Lane Check)
 
-*(To be filled upon completion of Phase 2)*
-
 - **What Was Built**:
+  - `src/perception/models.py`: Data structures for `DetectedObstacle` and `FramePerceptionResult`.
+  - `src/perception/distance.py`: Monocular distance estimator using pinhole camera geometry and ground-plane perspective projection, plus a central walking corridor analyzer ($0.25 W \le x_c \le 0.75 W$).
+  - `src/perception/hazard_heuristics.py`: Specialized computer vision detectors for environmental campus hazards not present in standard COCO:
+    - `stair`: Horizontal parallel riser detection via Sobel gradients and HoughLinesP.
+    - `pothole`: Dark surface depression/contour detection on the walking floor plane.
+    - `wall`: Imminent dead-end/flat planar obstacle detection within $<1.5\text{m}$.
+  - `src/perception/video_source.py`: Dual-mode video ingestion supporting live webcams, pre-recorded MP4 video files, and looping image sequence directories.
+  - `src/perception/detector.py`: `ObstacleDetector` integrating YOLOv8n, hazard heuristics, non-blocking thread safety, 2-frame temporal debouncing (hysteresis) to eliminate flickering, and OpenCV visual HUD annotation.
+  - `demo_phase2.py`: Interactive CLI and visual GUI runner for testing perception on test frames, video files, or live webcams.
+  - `tests/test_perception.py`: 8 unit tests validating distance scaling, corridor containment, stairs/potholes/wall heuristics, video looping, and debouncing.
 - **Technology & Libraries Used**:
+  - `ultralytics>=8.4.0` (YOLOv8n nano object detector).
+  - `opencv-python>=5.0.0` (Image processing, Canny edge detection, Hough lines, and HUD annotation).
+  - `numpy>=2.4.0` (Vectorized geometric and statistical image operations).
+  - `pydantic>=2.0` (Data validation for perception models).
 - **Decision / Alternatives Considered / Why This One**:
+  - *Decision:* Hybrid YOLOv8n (for objects: chairs, people, bags, tables) + OpenCV heuristic detectors (for stairs, potholes, walls) + Monocular pinhole geometry.
+  - *Alternatives Considered:*
+    - Training custom YOLO models on stairs/potholes (requires hours of data collection and GPU training, impossible within hackathon timeframe).
+    - Monocular Deep Depth models like MiDaS/DPT (too heavy on CPU, $>350\text{ms}$ per frame).
+    - Hardware LiDAR / Stereo camera (adds hardware costs and complexity).
+  - *Why This One:* YOLOv8n runs at $\sim 50\text{ms}$ ($\sim 20\text{ FPS}$) on standard laptop CPUs, requires zero GPU, and the CV heuristics detect stairs and potholes instantly without extra model training.
 - **Functionality & Data Flow**:
+  - Camera/Video feeds frames to `ObstacleDetector.process_frame()`.
+  - YOLOv8n identifies objects; `hazard_detector` identifies stairs, potholes, and walls.
+  - `DistanceEstimator` calculates physical distance in meters and checks if the hazard falls in the central walking lane ($0.25 W \le x_c \le 0.75 W$ and $d \le 3.5\text{m}$).
+  - A 2-frame temporal hysteresis filter ensures an obstacle persists across frames before setting it as the `primary_obstacle`, preventing noisy flickering.
 - **Inputs & Outputs**:
+  - *Input:* BGR video frame (`np.ndarray`).
+  - *Output:* `FramePerceptionResult` containing `obstacles` (`List[DetectedObstacle]`), `primary_obstacle` (`Optional[DetectedObstacle]`), `path_clear` (`bool`), `processing_time_ms` (`float`), and `fps` (`float`).
 - **Known Limitations**:
+  - Monocular distance estimation relies on assumed standard object dimensions and may vary if an obstacle is unusually sized.
+  - Extreme low-light or unlit environments may degrade camera visibility (handled by Tier 3 human escalation in Phase 4).
 
 ---
 

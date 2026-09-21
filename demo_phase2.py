@@ -34,8 +34,18 @@ def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int =
     video_source = VideoSource(source=source, loop_file=True, target_fps=10.0)
     detector = ObstacleDetector(confidence_threshold=0.35, enable_heuristics=True)
 
+    win_name = "CampusEcho Perception Feed (Phase 2)"
+    if not no_gui:
+        cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(win_name, 800, 600)
+        # Force window to stay visible on top of IDE/terminal
+        try:
+            cv2.setWindowProperty(win_name, cv2.WND_PROP_TOPMOST, 1)
+        except Exception:
+            pass
+
     print("\nStarting perception loop...")
-    print("Press 'q' in the OpenCV window to exit.\n")
+    print("Press 'q' in the OpenCV window or close it to exit.\n")
 
     frame_idx = 0
     try:
@@ -69,12 +79,20 @@ def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int =
             # Visual Display
             if not no_gui:
                 annotated = detector.annotate_frame(frame, result)
-                cv2.imshow("CampusEcho Perception Feed (Phase 2)", annotated)
+                cv2.imshow(win_name, annotated)
 
-                key = cv2.waitKey(100) & 0xFF
+                key = cv2.waitKey(10) & 0xFF
                 if key == ord('q'):
                     print("\nExiting visual preview...")
                     break
+
+                # If the window was closed with 'X', exit loop
+                try:
+                    if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+                        print("\nWindow closed by user. Exiting...")
+                        break
+                except Exception:
+                    pass
 
             if max_frames and frame_idx >= max_frames:
                 print(f"\nReached max demo frames ({max_frames}).")
@@ -104,8 +122,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-frames",
         type=int,
-        default=25,
-        help="Maximum frames to process in demo (default: 25)"
+        default=150,
+        help="Maximum frames to process in demo (default: 150)"
     )
     args = parser.parse_args()
 

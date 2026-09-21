@@ -1,15 +1,21 @@
 """Unit tests for the perception module: YOLOv8n, distance estimation, hazard heuristics, and video sources."""
 from pathlib import Path
 import cv2
+import numpy as np
 import pytest
 
 from src.perception.distance import DistanceEstimator
 from src.perception.hazard_heuristics import EnvironmentalHazardDetector
 from src.perception.video_source import VideoSource
 from src.perception.detector import ObstacleDetector
+from tests.generate_test_frames import generate_all_frames
 
 
 TEST_FRAMES_DIR = Path(__file__).parent.parent / "data" / "test_frames"
+
+# Ensure test frames exist
+if not TEST_FRAMES_DIR.exists() or not list(TEST_FRAMES_DIR.glob("*.jpg")):
+    generate_all_frames()
 
 
 @pytest.fixture
@@ -153,3 +159,38 @@ def test_detector_debouncing(obstacle_detector):
     assert res2.primary_obstacle is not None
     assert res2.primary_obstacle.label == "stair"
     assert res2.path_clear is False
+
+
+def test_person_exclusion_prevents_false_pothole(obstacle_detector):
+    """
+    Verifies that a person wearing dark clothes/shoes does NOT trigger a false pothole
+    due to exclusion masking and physical structure checks.
+    """
+    # Create a frame with a person (dark torso/legs in lower frame)
+    h, w = 480, 640
+    frame = np.full((h, w, 3), 190, dtype=np.uint8)
+
+    # Draw dark clothes/legs where a person stands in the lower center
+    cv2.rectangle(frame, (260, 200), (380, 440), (30, 30, 35), -1)
+
+    # Synthetic obstacle representing the person detected by YOLO
+    from src.perception.models import DetectedObstacle
+    person_obs = DetectedObstacle(
+        label="person",
+        confidence=0.92,
+        bbox=(250, 180, 390, 450),
+        bbox_normalized=(250/w, 180/h, 390/w, 450/h),
+        distance_m=2.0,
+        in_walking_lane=True,
+        horizontal_position="center",
+        urgency="high"
+    )
+
+    # Test hazard detector with the person in excluded_obstacles
+    hazards = obstacle_detector.hazard_detector.detect_hazards(
+        frame, excluded_obstacles=[person_obs]
+    )
+
+    potholes = [h for h in hazards if h.label == "pothole"]
+    assert len(potholes) == 0, "Person's dark clothes should NOT be detected as a pothole!"
+

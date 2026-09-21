@@ -144,7 +144,9 @@ class ObstacleDetector:
 
             # 2. Run Environmental Hazard Heuristics (stairs, potholes, walls)
             if self.enable_heuristics:
-                env_hazards = self.hazard_detector.detect_hazards(frame)
+                env_hazards = self.hazard_detector.detect_hazards(
+                    frame, excluded_obstacles=detected_obstacles
+                )
                 for hazard in env_hazards:
                     current_labels_seen.add(hazard.label)
                     detected_obstacles.append(hazard)

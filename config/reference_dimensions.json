@@ -1,0 +1,113 @@
+{
+  "person": {
+    "real_height_m": 1.70,
+    "real_width_m": 0.50,
+    "primary_dimension": "height",
+    "is_dynamic": true
+  },
+  "chair": {
+    "real_height_m": 0.80,
+    "real_width_m": 0.55,
+    "primary_dimension": "height",
+    "is_dynamic": false
+  },
+  "couch": {
+    "real_height_m": 0.85,
+    "real_width_m": 1.60,
+    "primary_dimension": "width",
+    "is_dynamic": false
+  },
+  "bench": {
+    "real_height_m": 0.75,
+    "real_width_m": 1.50,
+    "primary_dimension": "width",
+    "is_dynamic": false
+  },
+  "dining table": {
+    "real_height_m": 0.75,
+    "real_width_m": 1.20,
+    "primary_dimension": "width",
+    "is_dynamic": false
+  },
+  "backpack": {
+    "real_height_m": 0.50,
+    "real_width_m": 0.35,
+    "primary_dimension": "height",
+    "is_dynamic": false
+  },
+  "suitcase": {
+    "real_height_m": 0.65,
+    "real_width_m": 0.45,
+    "primary_dimension": "height",
+    "is_dynamic": false
+  },
+  "bottle": {
+    "real_height_m": 0.30,
+    "real_width_m": 0.10,
+    "primary_dimension": "ground_contact",
+    "is_dynamic": false
+  },
+  "two_wheeler": {
+    "aliases": ["bicycle", "motorcycle", "bike", "scooter"],
+    "real_height_m": 1.15,
+    "real_width_m": 0.70,
+    "real_length_m": 1.90,
+    "primary_dimension": "ground_contact",
+    "is_dynamic": true
+  },
+  "four_wheeler": {
+    "aliases": ["car", "bus", "truck", "van", "auto_rickshaw"],
+    "real_height_m": 1.50,
+    "real_width_m": 1.80,
+    "real_length_m": 4.50,
+    "primary_dimension": "width",
+    "is_dynamic": true
+  },
+  "tree": {
+    "aliases": ["tree_trunk"],
+    "trunk_diameter_m": 0.40,
+    "root_padding_m": 0.30,
+    "primary_dimension": "width",
+    "is_dynamic": false
+  },
+  "pillar": {
+    "aliases": ["column"],
+    "real_width_m": 0.50,
+    "real_height_m": 3.00,
+    "primary_dimension": "width",
+    "is_dynamic": false
+  },
+  "gate": {
+    "real_width_m": 3.00,
+    "real_height_m": 2.50,
+    "primary_dimension": "width",
+    "is_dynamic": false
+  },
+  "stone": {
+    "aliases": ["rock", "rubble", "large_stone"],
+    "real_height_m": 0.35,
+    "real_width_m": 0.45,
+    "primary_dimension": "ground_contact",
+    "is_dynamic": false
+  },
+  "pothole": {
+    "primary_dimension": "ground_contact",
+    "is_dynamic": false
+  },
+  "stair": {
+    "real_height_m": 0.90,
+    "primary_dimension": "height",
+    "is_dynamic": false
+  },
+  "wall": {
+    "real_width_m": 2.50,
+    "primary_dimension": "width",
+    "is_dynamic": false
+  },
+  "unidentified": {
+    "primary_dimension": "ground_contact",
+    "is_dynamic": false,
+    "force_tier3_escalation": true,
+    "safety_factor": 0.85
+  }
+}

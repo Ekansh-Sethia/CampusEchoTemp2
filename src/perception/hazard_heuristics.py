@@ -1,4 +1,7 @@
-"""Heuristic computer vision detectors for environmental hazards: stairs, potholes, and walls."""
+"""Heuristic computer vision detectors for campus environmental hazards:
+stairs, potholes, walls, large stones/rubble, trees (via leaf/foliage density and trunk),
+and architectural pillars/gates.
+"""
 from typing import List, Optional, Tuple
 import cv2
 import numpy as np
@@ -7,7 +10,11 @@ from .distance import DistanceEstimator
 
 
 class EnvironmentalHazardDetector:
-    """Detects campus hazards not present in standard COCO: stairs, potholes, and walls."""
+    """
+    Detects campus hazards not covered or under-represented in standard COCO:
+    stairs, potholes, walls, large stones/rubble, trees (foliage + trunk),
+    and architectural pillars/gates.
+    """
 
     def __init__(self, distance_estimator: Optional[DistanceEstimator] = None):
         self.distance_estimator = distance_estimator or DistanceEstimator()
@@ -18,19 +25,21 @@ class EnvironmentalHazardDetector:
         excluded_obstacles: Optional[List[DetectedObstacle]] = None
     ) -> List[DetectedObstacle]:
         """
-        Runs physics- and geometry-based checks to identify stairs, potholes, or walls.
-        Guarantees that floor hazards are never detected on human bodies or furniture.
+        Runs physics- and geometry-based checks to identify environmental obstacles.
+        Guarantees that floor hazards are never detected on human bodies or vehicles.
         """
         hazards: List[DetectedObstacle] = []
         h, w = frame.shape[:2]
 
-        # Construct exclusion mask for any detected people, chairs, or furniture
+        # Construct exclusion mask for detected people, furniture, and vehicles
         exclusion_mask = np.zeros((h, w), dtype=np.uint8)
         if excluded_obstacles:
             for obs in excluded_obstacles:
-                if obs.label in ("person", "chair", "couch", "bench", "dining table", "backpack"):
+                if obs.label in (
+                    "person", "chair", "couch", "bench", "dining table", "backpack",
+                    "two_wheeler", "four_wheeler", "bicycle", "motorcycle", "car", "bus", "truck"
+                ):
                     xmin, ymin, xmax, ymax = obs.bbox
-                    # Dilate slightly to include clothing folds and direct shadows
                     pad_x = int((xmax - xmin) * 0.08)
                     pad_y = int((ymax - ymin) * 0.08)
                     x1 = max(0, xmin - pad_x)
@@ -43,13 +52,41 @@ class EnvironmentalHazardDetector:
         stair_obs = self._detect_stairs(frame, h, w, exclusion_mask)
         if stair_obs:
             hazards.append(stair_obs)
+            sx1, sy1, sx2, sy2 = stair_obs.bbox
+            cv2.rectangle(exclusion_mask, (sx1, sy1), (sx2, sy2), 255, -1)
 
-        # 2. Detect Potholes (ground level depression with disordered/rough internal texture)
+        # 2. Detect Trees (via leaf/foliage density and/or trunk structure)
+        tree_obs = self._detect_trees(frame, h, w, exclusion_mask)
+        if tree_obs:
+            hazards.extend(tree_obs)
+            for tr in tree_obs:
+                tx1, ty1, tx2, ty2 = tr.bbox
+                cv2.rectangle(exclusion_mask, (tx1, ty1), (tx2, ty2), 255, -1)
+
+        # 3. Detect Architectural Pillars / Columns in corridor
+        pillar_obs = self._detect_pillars(frame, h, w, exclusion_mask)
+        if pillar_obs:
+            hazards.extend(pillar_obs)
+            for pl in pillar_obs:
+                px1, py1, px2, py2 = pl.bbox
+                cv2.rectangle(exclusion_mask, (px1, py1), (px2, py2), 255, -1)
+
+        # 4. Detect Potholes (ground level depression with disordered/rough internal texture)
         pothole_obs = self._detect_potholes(frame, h, w, exclusion_mask)
         if pothole_obs:
             hazards.append(pothole_obs)
+            px1, py1, px2, py2 = pothole_obs.bbox
+            cv2.rectangle(exclusion_mask, (px1, py1), (px2, py2), 255, -1)
 
-        # 3. Detect Imminent Wall / Dead-End (large planar occlusion)
+        # 5. Detect Large Stones / Rock / Rubble (isolated 3D protrusion vs flat paver blocks)
+        stone_obs = self._detect_stones(frame, h, w, exclusion_mask)
+        if stone_obs:
+            hazards.extend(stone_obs)
+            for st in stone_obs:
+                stx1, sty1, stx2, sty2 = st.bbox
+                cv2.rectangle(exclusion_mask, (stx1, sty1), (stx2, sty2), 255, -1)
+
+        # 6. Detect Imminent Wall / Dead-End (large planar occlusion)
         wall_obs = self._detect_wall(frame, h, w)
         if wall_obs:
             hazards.append(wall_obs)
@@ -64,40 +101,32 @@ class EnvironmentalHazardDetector:
         exclusion_mask: np.ndarray
     ) -> Optional[DetectedObstacle]:
         """
-        Detects staircases based on:
-        1. Regular geometric perspective progression (steps get narrower and spacing compresses with distance).
-        2. Alternating light/shadow shading between vertical risers and horizontal treads.
-        3. Contextual support from flanking diagonal side railings or wall stringers.
-        4. Strict exclusion of human bodies and furniture.
+        Detects real staircases while strictly rejecting flat pavements, paver blocks, and floor tiles.
         """
-        # Focus on walking corridor in lower 60% of frame
         roi_ymin = int(h * 0.40)
         roi = frame[roi_ymin:h, :]
         roi_mask = exclusion_mask[roi_ymin:h, :]
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # Suppress any regions occupied by people/chairs
         gray[roi_mask > 0] = 128
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        # 1. Find horizontal edge risers
-        edges = cv2.Canny(blurred, 40, 120, apertureSize=3)
+        edges = cv2.Canny(blurred, 50, 140, apertureSize=3)
         edges[roi_mask > 0] = 0
 
         lines = cv2.HoughLinesP(
             edges,
             rho=1,
             theta=np.pi / 180,
-            threshold=45,
-            minLineLength=int(w * 0.20),
-            maxLineGap=25
+            threshold=55,
+            minLineLength=int(w * 0.22),
+            maxLineGap=20
         )
 
         if lines is None:
             return None
 
-        # Filter horizontal lines and record (y_pos, x_left, x_right, width)
-        step_candidates = []
+        horizontal_lines = []
         for line in lines:
             pts = line.flatten()
             if len(pts) < 4:
@@ -105,26 +134,23 @@ class EnvironmentalHazardDetector:
             x1, y1, x2, y2 = int(pts[0]), int(pts[1]), int(pts[2]), int(pts[3])
             dx = abs(x2 - x1)
             dy = abs(y2 - y1)
-            if dx > 0 and (dy / dx) < 0.20:  # Horizontal within ~11 degrees
+            if dx > 0 and (dy / dx) < 0.15:
                 y_abs = roi_ymin + (y1 + y2) // 2
                 x_min = min(x1, x2)
                 x_max = max(x1, x2)
-                step_candidates.append((y_abs, x_min, x_max, x_max - x_min))
+                horizontal_lines.append((y_abs, x_min, x_max, x_max - x_min))
 
-        if len(step_candidates) < 3:
+        if len(horizontal_lines) < 3:
             return None
 
-        # Sort candidate steps from bottom (closest) to top (furthest)
-        step_candidates.sort(key=lambda s: s[0], reverse=True)
+        horizontal_lines.sort(key=lambda s: s[0], reverse=True)
 
-        # Cluster nearby lines belonging to the same step riser
         clustered_steps = []
-        current_cluster = [step_candidates[0]]
-        for step in step_candidates[1:]:
-            if abs(step[0] - current_cluster[-1][0]) <= 12:
+        current_cluster = [horizontal_lines[0]]
+        for step in horizontal_lines[1:]:
+            if abs(step[0] - current_cluster[-1][0]) <= 10:
                 current_cluster.append(step)
             else:
-                # Average y, min x1, max x2
                 avg_y = int(np.mean([s[0] for s in current_cluster]))
                 min_x = min(s[1] for s in current_cluster)
                 max_x = max(s[2] for s in current_cluster)
@@ -140,51 +166,53 @@ class EnvironmentalHazardDetector:
         if len(clustered_steps) < 3:
             return None
 
-        # 2. Check Perspective Progression:
-        # Distance between successive risers should compress as steps recede (dy decreases)
-        # Width of steps should narrow as they recede into the distance
         y_positions = [s[0] for s in clustered_steps]
         spacings = [abs(y_positions[i] - y_positions[i+1]) for i in range(len(y_positions)-1)]
 
-        # Spacings must be within reasonable step bounds (10 to 90 pixels)
-        valid_spacings = [s for s in spacings if 10 <= s <= 90]
-        if len(valid_spacings) < 2:
+        mean_spacing = float(np.mean(spacings))
+        std_spacing = float(np.std(spacings))
+
+        # Rejection: Constant Spacing Check (Paver blocks / flat tile seams)
+        if mean_spacing < 14 or (std_spacing / (mean_spacing + 1e-5)) < 0.15:
             return None
 
-        # 3. Check Alternating Shading (Risers in shadow, Treads catching light)
-        shading_alternations = 0
+        # Rejection: Sawtooth Shading Check
+        sawtooth_transitions = 0
         for i in range(len(clustered_steps) - 1):
-            y_lower = clustered_steps[i][0]
-            y_upper = clustered_steps[i+1][0]
+            y_lower = clustered_steps[i][0] - roi_ymin
+            y_upper = clustered_steps[i+1][0] - roi_ymin
             mid_y = (y_lower + y_upper) // 2
-            roi_slice_lower = gray[max(0, y_lower - roi_ymin - 3):max(1, y_lower - roi_ymin + 3), :]
-            roi_slice_tread = gray[max(0, mid_y - roi_ymin - 3):max(1, mid_y - roi_ymin + 3), :]
-            if roi_slice_lower.size > 0 and roi_slice_tread.size > 0:
-                # Contrast difference between riser edge and tread plane
-                if abs(float(np.mean(roi_slice_tread)) - float(np.mean(roi_slice_lower))) > 8.0:
-                    shading_alternations += 1
 
-        # 4. Check for Side Railing / Wall Context (diagonal framing lines)
+            riser_band = gray[max(0, y_lower - 4):min(gray.shape[0], y_lower + 4), :]
+            tread_plane = gray[max(0, mid_y - 4):min(gray.shape[0], mid_y + 4), :]
+
+            if riser_band.size > 0 and tread_plane.size > 0:
+                contrast = abs(float(np.mean(tread_plane)) - float(np.mean(riser_band)))
+                if contrast >= 14.0:
+                    sawtooth_transitions += 1
+
+        if sawtooth_transitions < 2:
+            return None
+
         railings_found = False
-        diag_lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 40, minLineLength=60, maxLineGap=15)
+        diag_lines = cv2.HoughLinesP(edges, 1, np.pi / 180, 45, minLineLength=50, maxLineGap=15)
         if diag_lines is not None:
             for dline in diag_lines:
                 pts = dline.flatten()
                 if len(pts) >= 4:
                     dx = abs(pts[2] - pts[0])
                     dy = abs(pts[3] - pts[1])
-                    if dx > 0 and 0.4 <= (dy / dx) <= 2.5:  # Diagonal railing angle (~22 to 68 degrees)
+                    if dx > 0 and 0.35 <= (dy / dx) <= 2.2:
                         railings_found = True
                         break
 
-        # Confidence calculation based on physical corroboration
-        confidence = 0.60
-        if len(valid_spacings) >= 3:
-            confidence += 0.10
-        if shading_alternations >= 2:
+        confidence = 0.65
+        if sawtooth_transitions >= 3:
             confidence += 0.10
         if railings_found:
-            confidence += 0.08
+            confidence += 0.10
+        if std_spacing / mean_spacing >= 0.25:
+            confidence += 0.05
 
         ymin = max(0, min(y_positions) - 15)
         ymax = min(h, max(y_positions) + 15)
@@ -204,8 +232,213 @@ class EnvironmentalHazardDetector:
             in_walking_lane=in_lane,
             horizontal_position=h_pos,
             urgency=urgency,
-            is_environmental_hazard=True
+            is_environmental_hazard=True,
+            detection_source="heuristic"
         )
+
+    def _detect_trees(
+        self,
+        frame: np.ndarray,
+        h: int,
+        w: int,
+        exclusion_mask: np.ndarray
+    ) -> List[DetectedObstacle]:
+        """
+        Detects trees through:
+          1. Leaf / Foliage Density: Even if the trunk is not visible, leaves/canopy/branches
+             are detected based on HSV foliage colors (green/olive/yellow-green) and dense texture.
+          2. Vertical Trunk: Cylindrical trunk with bark texture and ground root ring.
+          3. Unified Tree: Merges foliage and trunk when both are visible into a single obstacle.
+          4. Effective radius: Adds +0.3m padding for root zones and low-hanging branches.
+        """
+        trees: List[DetectedObstacle] = []
+
+        # 1. Detect Leaf / Foliage Density Clusters
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        # Green / olive foliage hues with solid leaf saturation
+        lower_green = np.array([30, 45, 40])
+        upper_green = np.array([85, 255, 255])
+        green_mask = cv2.inRange(hsv, lower_green, upper_green)
+        green_mask[exclusion_mask > 0] = 0
+
+        # Cluster foliage leaves into connected canopies / branches
+        f_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        foliage_clustered = cv2.morphologyEx(green_mask, cv2.MORPH_CLOSE, f_kernel)
+        contours_f, _ = cv2.findContours(foliage_clustered, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        foliage_boxes: List[Tuple[int, int, int, int]] = []
+        for cnt in contours_f:
+            area = cv2.contourArea(cnt)
+            if area >= 1800:
+                x, y, cw, ch = cv2.boundingRect(cnt)
+                # Leaves/canopy/branches are elevated (not flat on floor) and span walking corridor
+                if y < int(h * 0.65) and (x + cw) > w * 0.15 and x < w * 0.85:
+                    foliage_boxes.append((x, y, x + cw, y + ch))
+
+        # 2. Detect Vertical Trunk / Column in path corridor
+        roi_xmin = int(w * 0.15)
+        roi_xmax = int(w * 0.85)
+        roi_ymin = int(h * 0.20)
+        roi_ymax = int(h * 0.90)
+
+        roi = frame[roi_ymin:roi_ymax, roi_xmin:roi_xmax]
+        roi_excl = exclusion_mask[roi_ymin:roi_ymax, roi_xmin:roi_xmax]
+
+        trunk_boxes: List[Tuple[int, int, int, int]] = []
+        if roi.size > 0:
+            gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            gray[roi_excl > 0] = 128
+            blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+            sobel_x = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+            sobel_abs = np.uint8(np.absolute(sobel_x))
+            _, thresh = cv2.threshold(sobel_abs, 45, 255, cv2.THRESH_BINARY)
+            thresh[roi_excl > 0] = 0
+
+            v_closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 21)))
+            col_closed = cv2.morphologyEx(v_closed, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1)))
+
+            contours_t, _ = cv2.findContours(col_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for cnt in contours_t:
+                x, y, cw, ch = cv2.boundingRect(cnt)
+                if ch >= int(h * 0.30) and cw >= int(w * 0.04) and (ch / max(1, cw)) >= 1.3:
+                    if x > 10 and (x + cw) < (roi_xmax - roi_xmin - 10):
+                        # Verify bark texture / roughness
+                        col_roi = gray[y:y+ch, x:x+cw]
+                        laplacian_var = float(np.var(cv2.Laplacian(col_roi, cv2.CV_64F)))
+                        if laplacian_var >= 130.0:  # Textured bark
+                            trunk_boxes.append((roi_xmin + x, roi_ymin + y, roi_xmin + x + cw, roi_ymin + y + ch))
+
+        # 3. Unified Assembly: Merge foliage and trunk, or process each individually
+        tree_regions: List[Tuple[int, int, int, int, Optional[int]]] = []  # (xmin, ymin, xmax, ymax, ground_y)
+        used_trunks = set()
+
+        for fx1, fy1, fx2, fy2 in foliage_boxes:
+            merged = False
+            for tidx, (tx1, ty1, tx2, ty2) in enumerate(trunk_boxes):
+                # Check horizontal overlap and vertical proximity (foliage above/overlapping trunk)
+                h_overlap = max(0, min(fx2, tx2) - max(fx1, tx1))
+                if h_overlap > 20 and fy2 >= (ty1 - 40):
+                    mx1 = min(fx1, tx1)
+                    my1 = min(fy1, ty1)
+                    mx2 = max(fx2, tx2)
+                    my2 = max(fy2, ty2)
+                    tree_regions.append((mx1, my1, mx2, my2, my2))
+                    used_trunks.add(tidx)
+                    merged = True
+                    break
+            if not merged:
+                # Foliage-only tree detection (e.g. canopy or low-hanging branches in corridor)
+                tree_regions.append((fx1, fy1, fx2, fy2, fy2))
+
+        for tidx, (tx1, ty1, tx2, ty2) in enumerate(trunk_boxes):
+            if tidx not in used_trunks:
+                # Check if already covered by an existing tree region
+                already_covered = any(
+                    (rx1 <= tx1 and rx2 >= tx2 and ry1 <= ty1 and ry2 >= ty2)
+                    for rx1, ry1, rx2, ry2, _ in tree_regions
+                )
+                if not already_covered:
+                    tree_regions.append((tx1, ty1, tx2, ty2, ty2))
+
+        # Convert tree regions to DetectedObstacle instances
+        for xmin, ymin, xmax, ymax, ground_y in tree_regions:
+            bbox = (xmin, ymin, xmax, ymax)
+            effective_radius = 0.30  # +0.3m padding for root zone / branch overhang
+
+            dist = self.distance_estimator.estimate_distance("tree", bbox, h, w, contact_y=ground_y)
+            in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
+                bbox, w, h, dist, effective_radius_m=effective_radius
+            )
+
+            trees.append(DetectedObstacle(
+                label="tree",
+                confidence=0.75,
+                bbox=bbox,
+                bbox_normalized=(xmin / w, ymin / h, xmax / w, ymax / h),
+                distance_m=dist,
+                in_walking_lane=in_lane,
+                horizontal_position=h_pos,
+                urgency=urgency,
+                is_environmental_hazard=True,
+                effective_radius_m=effective_radius,
+                detection_source="heuristic",
+                ground_contact_y=ground_y
+            ))
+
+        return trees
+
+    def _detect_pillars(
+        self,
+        frame: np.ndarray,
+        h: int,
+        w: int,
+        exclusion_mask: np.ndarray
+    ) -> List[DetectedObstacle]:
+        """
+        Detects smooth architectural columns / pillars standing inside the corridor.
+        """
+        pillars: List[DetectedObstacle] = []
+        roi_xmin = int(w * 0.15)
+        roi_xmax = int(w * 0.85)
+        roi_ymin = int(h * 0.20)
+        roi_ymax = int(h * 0.90)
+
+        roi = frame[roi_ymin:roi_ymax, roi_xmin:roi_xmax]
+        roi_excl = exclusion_mask[roi_ymin:roi_ymax, roi_xmin:roi_xmax]
+        if roi.size == 0:
+            return pillars
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray[roi_excl > 0] = 128
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+
+        sobel_x = cv2.Sobel(blurred, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_abs = np.uint8(np.absolute(sobel_x))
+        _, thresh = cv2.threshold(sobel_abs, 45, 255, cv2.THRESH_BINARY)
+        thresh[roi_excl > 0] = 0
+
+        v_closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 21)))
+        col_closed = cv2.morphologyEx(v_closed, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (25, 1)))
+
+        contours, _ = cv2.findContours(col_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for cnt in contours:
+            x, y, cw, ch = cv2.boundingRect(cnt)
+            if ch >= int(h * 0.35) and cw >= int(w * 0.05) and (ch / max(1, cw)) >= 1.5:
+                if x <= 10 or (x + cw) >= (roi_xmax - roi_xmin - 10):
+                    continue
+
+                col_roi = gray[y:y+ch, x:x+cw]
+                laplacian_var = float(np.var(cv2.Laplacian(col_roi, cv2.CV_64F)))
+                # Pillars have smooth surfaces (low laplacian variance), unlike tree bark
+                if laplacian_var < 130.0:
+                    abs_xmin = roi_xmin + x
+                    abs_ymin = roi_ymin + y
+                    abs_xmax = roi_xmin + x + cw
+                    abs_ymax = roi_ymin + y + ch
+                    bbox = (abs_xmin, abs_ymin, abs_xmax, abs_ymax)
+
+                    dist = self.distance_estimator.estimate_distance("pillar", bbox, h, w, contact_y=abs_ymax)
+                    in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
+                        bbox, w, h, dist
+                    )
+
+                    pillars.append(DetectedObstacle(
+                        label="pillar",
+                        confidence=0.78,
+                        bbox=bbox,
+                        bbox_normalized=(abs_xmin / w, abs_ymin / h, abs_xmax / w, abs_ymax / h),
+                        distance_m=dist,
+                        in_walking_lane=in_lane,
+                        horizontal_position=h_pos,
+                        urgency=urgency,
+                        is_environmental_hazard=True,
+                        detection_source="heuristic",
+                        ground_contact_y=abs_ymax
+                    ))
+
+        return pillars
 
     def _detect_potholes(
         self,
@@ -215,13 +448,8 @@ class EnvironmentalHazardDetector:
         exclusion_mask: np.ndarray
     ) -> Optional[DetectedObstacle]:
         """
-        Detects potholes / surface depressions based on:
-        1. Ground depression boundary: Enclosed irregular/elliptical contour on the walking floor.
-        2. Disordered internal texture: High internal gradient entropy / texture roughness (broken asphalt,
-           gravel, or reflection distortion) contrasting with the relatively smooth surrounding floor plane.
-        3. Strict exclusion of human bodies, clothing, shoes, and furniture.
+        Detects real potholes and surface depressions while strictly rejecting flat shadows.
         """
-        # Floor ROI: bottom 45% of image, central corridor
         roi_ymin = int(h * 0.55)
         roi_xmin = int(w * 0.15)
         roi_xmax = int(w * 0.85)
@@ -232,104 +460,187 @@ class EnvironmentalHazardDetector:
             return None
 
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # Suppress any region overlapping with people/chairs
         gray_masked = gray.copy()
         gray_masked[roi_excl > 0] = 128
 
-        # Compute baseline texture roughness of the general floor (Laplacian variance)
-        floor_laplacian = cv2.Laplacian(gray_masked, cv2.CV_64F)
-        floor_texture_variance = float(np.var(floor_laplacian))
+        floor_pixels = gray_masked[roi_excl == 0]
+        if floor_pixels.size < 500:
+            return None
 
-        # Detect rim boundaries using Canny edge contours
+        floor_laplacian = cv2.Laplacian(gray_masked, cv2.CV_64F)
+        valid_floor_mask = (roi_excl == 0)
+        floor_roughness = float(np.var(floor_laplacian[valid_floor_mask])) if np.any(valid_floor_mask) else 50.0
+        floor_roughness = max(10.0, floor_roughness)
+
         blurred = cv2.GaussianBlur(gray_masked, (7, 7), 0)
-        edges = cv2.Canny(blurred, 30, 90)
+        edges = cv2.Canny(blurred, 35, 100)
         edges[roi_excl > 0] = 0
 
-        # Close small gaps in the depression rim
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
-
         contours, _ = cv2.findContours(closed_edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            # Area must be significant enough to represent a real ground hole (800 to 25000 pixels)
             if 800 <= area <= 25000:
-                x, y, cw, ch = cv2.boundingRect(cnt)
+                perimeter = cv2.arcLength(cnt, True)
+                if perimeter == 0:
+                    continue
 
-                # Check overlap with exclusion mask
+                rim_roughness = (perimeter * perimeter) / (4.0 * np.pi * area)
+                if rim_roughness < 1.6:
+                    continue
+
+                x, y, cw, ch = cv2.boundingRect(cnt)
                 cnt_mask = np.zeros_like(gray)
                 cv2.drawContours(cnt_mask, [cnt], -1, 255, -1)
                 overlap = cv2.bitwise_and(cnt_mask, roi_excl)
-                if cv2.countNonZero(overlap) > (area * 0.15):
-                    # Overlaps significantly with a person or chair -> reject immediately
+                if cv2.countNonZero(overlap) > (area * 0.10):
                     continue
 
-                # Ground perspective check: Potholes on the floor appear horizontally elongated (aspect ratio 1.1 to 4.0)
-                aspect_ratio = cw / float(ch) if ch > 0 else 0
-                if not (0.9 <= aspect_ratio <= 4.0):
-                    continue
-
-                # Texture Disorder Check:
-                # Inside a real pothole (cracked asphalt, depression cavity, water reflection),
-                # texture roughness and gradient entropy are significantly higher than the smooth floor baseline
                 pothole_interior = gray[y:y+ch, x:x+cw]
-                if pothole_interior.size == 0:
+                pothole_mask_interior = cnt_mask[y:y+ch, x:x+cw]
+                if pothole_interior.size == 0 or cv2.countNonZero(pothole_mask_interior) < 100:
                     continue
 
                 interior_laplacian = cv2.Laplacian(pothole_interior, cv2.CV_64F)
-                interior_texture_variance = float(np.var(interior_laplacian))
+                interior_roughness = float(np.var(interior_laplacian[pothole_mask_interior > 0]))
+                distortion_ratio = interior_roughness / floor_roughness
 
-                # If the interior has disordered texture (variance significantly higher than floor or high edge content)
-                # OR strong boundary depression contrast:
-                has_disordered_structure = (interior_texture_variance > 1.4 * floor_texture_variance) or (interior_texture_variance > 180.0)
+                if distortion_ratio < 2.0:
+                    continue
 
-                # Rim depression contrast: mean brightness inside depression vs immediately surrounding floor rim
-                pothole_mean = float(np.mean(pothole_interior))
-                floor_mean = float(np.mean(gray_masked[roi_excl == 0])) if np.any(roi_excl == 0) else pothole_mean
+                aspect_ratio = cw / float(ch) if ch > 0 else 0
+                if not (0.85 <= aspect_ratio <= 3.8):
+                    continue
 
-                # Pothole has either disordered gravel/debris OR water reflection / cavity difference
-                is_valid_pothole = has_disordered_structure and (abs(pothole_mean - floor_mean) > 12.0)
+                abs_xmin = roi_xmin + x
+                abs_ymin = roi_ymin + y
+                abs_xmax = abs_xmin + cw
+                abs_ymax = abs_ymin + ch
+                bbox = (abs_xmin, abs_ymin, abs_xmax, abs_ymax)
 
-                if is_valid_pothole:
-                    abs_xmin = roi_xmin + x
-                    abs_ymin = roi_ymin + y
-                    abs_xmax = abs_xmin + cw
-                    abs_ymax = abs_ymin + ch
-                    bbox = (abs_xmin, abs_ymin, abs_xmax, abs_ymax)
+                confidence = min(0.85, 0.65 + 0.05 * min(4.0, distortion_ratio))
+                dist = self.distance_estimator.estimate_distance("pothole", bbox, h, w)
+                in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
+                    bbox, w, h, dist
+                )
 
-                    confidence = 0.75 if has_disordered_structure else 0.65
-                    dist = self.distance_estimator.estimate_distance("pothole", bbox, h, w)
-                    in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
-                        bbox, w, h, dist
-                    )
-
-                    return DetectedObstacle(
-                        label="pothole",
-                        confidence=confidence,
-                        bbox=bbox,
-                        bbox_normalized=(abs_xmin / w, abs_ymin / h, abs_xmax / w, abs_ymax / h),
-                        distance_m=dist,
-                        in_walking_lane=in_lane,
-                        horizontal_position=h_pos,
-                        urgency=urgency,
-                        is_environmental_hazard=True
-                    )
+                return DetectedObstacle(
+                    label="pothole",
+                    confidence=round(confidence, 2),
+                    bbox=bbox,
+                    bbox_normalized=(abs_xmin / w, abs_ymin / h, abs_xmax / w, abs_ymax / h),
+                    distance_m=dist,
+                    in_walking_lane=in_lane,
+                    horizontal_position=h_pos,
+                    urgency=urgency,
+                    is_environmental_hazard=True,
+                    detection_source="heuristic"
+                )
 
         return None
+
+    def _detect_stones(
+        self,
+        frame: np.ndarray,
+        h: int,
+        w: int,
+        exclusion_mask: np.ndarray
+    ) -> List[DetectedObstacle]:
+        """
+        Detects large stones, rocks, and rubble resting on the walking ground.
+        STRICTLY differentiates stones from flat paver blocks:
+          - Paver blocks have flat periodic joints with no vertical height.
+          - Stones have:
+            1. Isolated 3D protrusion contrasting against the floor.
+            2. Distinct 3D crown shading: upper crown catches overhead light, lower band is in shadow (shading >= 15).
+            3. Compact aspect ratio (0.5 to 2.4).
+        """
+        stones: List[DetectedObstacle] = []
+        roi_ymin = int(h * 0.45)
+        roi_xmin = int(w * 0.15)
+        roi_xmax = int(w * 0.85)
+
+        roi = frame[roi_ymin:h, roi_xmin:roi_xmax]
+        roi_excl = exclusion_mask[roi_ymin:h, roi_xmin:roi_xmax]
+        if roi.size == 0:
+            return stones
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        gray_masked = gray.copy()
+        gray_masked[roi_excl > 0] = 180
+
+        floor_median = np.median(gray_masked[roi_excl == 0]) if np.any(roi_excl == 0) else 180.0
+
+        # Contrast against floor plane
+        diff = cv2.absdiff(gray_masked, int(floor_median))
+        _, thresh = cv2.threshold(diff, 25, 255, cv2.THRESH_BINARY)
+        thresh[roi_excl > 0] = 0
+
+        # Morphological open to completely eliminate thin 1-2px paver lines
+        clean = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)))
+        clean = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+
+        contours, _ = cv2.findContours(clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for cnt in contours:
+            area = cv2.contourArea(cnt)
+            if 500 <= area <= 18000:
+                x, y, cw, ch = cv2.boundingRect(cnt)
+                aspect_ratio = cw / float(ch) if ch > 0 else 0
+
+                if not (0.5 <= aspect_ratio <= 2.4):
+                    continue
+
+                obj_roi = gray[y:y+ch, x:x+cw]
+                top_band = obj_roi[:max(1, ch // 3), :]
+                bot_band = obj_roi[max(1, 2 * ch // 3):, :]
+                if top_band.size == 0 or bot_band.size == 0:
+                    continue
+
+                # 3D Crown Shading: Stone catches overhead light on top, dark at base
+                shading_contrast = float(np.mean(top_band)) - float(np.mean(bot_band))
+
+                if shading_contrast < 15.0:
+                    continue
+
+                abs_xmin = roi_xmin + x
+                abs_ymin = roi_ymin + y
+                abs_xmax = abs_xmin + cw
+                abs_ymax = abs_ymin + ch
+                bbox = (abs_xmin, abs_ymin, abs_xmax, abs_ymax)
+
+                dist = self.distance_estimator.estimate_distance("stone", bbox, h, w, contact_y=abs_ymax)
+                in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
+                    bbox, w, h, dist
+                )
+
+                stones.append(DetectedObstacle(
+                    label="stone",
+                    confidence=0.72,
+                    bbox=bbox,
+                    bbox_normalized=(abs_xmin / w, abs_ymin / h, abs_xmax / w, abs_ymax / h),
+                    distance_m=dist,
+                    in_walking_lane=in_lane,
+                    horizontal_position=h_pos,
+                    urgency=urgency,
+                    is_environmental_hazard=True,
+                    detection_source="heuristic",
+                    ground_contact_y=abs_ymax
+                ))
+
+        return stones
 
     def _detect_wall(self, frame: np.ndarray, h: int, w: int) -> Optional[DetectedObstacle]:
         """
         Detects imminent planar wall obstruction right in front of user (<1.5m).
         """
-        # If there is a distinct floor/ceiling contrast (e.g., ceiling vs floor),
-        # the camera is looking down an open corridor, not facing a solid wall.
         top_mean = float(np.mean(frame[:int(h * 0.35), :]))
         bottom_mean = float(np.mean(frame[int(h * 0.65):, :]))
         if abs(top_mean - bottom_mean) > 25.0:
             return None
 
-        # Central ROI: center 60% width, lower 60% height
         center_roi = frame[int(h * 0.3):int(h * 0.9), int(w * 0.2):int(w * 0.8)]
         if center_roi.size == 0:
             return None
@@ -338,7 +649,6 @@ class EnvironmentalHazardDetector:
         edges = cv2.Canny(gray, 40, 120)
         edge_density = np.count_nonzero(edges) / edges.size
 
-        # In a very close wall (<1.2m), color variance is low and edge density is minimal
         color_std = float(np.std(gray))
         if edge_density < 0.02 and color_std < 20.0:
             bbox = (int(w * 0.15), int(h * 0.2), int(w * 0.85), int(h * 0.95))
@@ -352,8 +662,8 @@ class EnvironmentalHazardDetector:
                 in_walking_lane=True,
                 horizontal_position="center",
                 urgency="critical",
-                is_environmental_hazard=True
+                is_environmental_hazard=True,
+                detection_source="heuristic"
             )
 
         return None
-

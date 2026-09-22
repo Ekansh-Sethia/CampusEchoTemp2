@@ -50,10 +50,11 @@ Each phase section documents:
 - **What Was Built**:
   - `src/perception/models.py`: Data structures for `DetectedObstacle` and `FramePerceptionResult`.
   - `src/perception/distance.py`: Monocular distance estimator using pinhole camera geometry and ground-plane perspective projection, plus a central walking corridor analyzer ($0.25 W \le x_c \le 0.75 W$).
-  - `src/perception/hazard_heuristics.py`: Specialized computer vision detectors for environmental campus hazards not present in standard COCO:
-    - `stair`: Horizontal parallel riser detection via Sobel gradients and HoughLinesP.
-    - `pothole`: Dark surface depression/contour detection on the walking floor plane.
+  - `src/perception/hazard_heuristics.py`: Specialized computer vision detectors for environmental campus hazards:
+    - `stair`: Real staircase detection based on perspective spacing compression ($dy$ decreases as steps recede), significant vertical riser face height ($\ge 14\text{px}$), sawtooth photometric normal shading between tread and riser ($|I_{\text{tread}} - I_{\text{riser}}| \ge 14$), and flanking diagonal handrail/wall stringers. **Rejects flat paver blocks and tile seams** whose spacing is constant and surface is coplanar.
+    - `pothole`: Surface depression detection prioritizing **internal structural distortion / roughness entropy** ($\ge 2.0\times$ floor roughness) and jagged fractured rims. **Rejects smooth floor shadows** which have identical texture roughness to the surrounding pavement.
     - `wall`: Imminent dead-end/flat planar obstacle detection within $<1.5\text{m}$.
+    - `exclusion_mask`: Masks out any detected people, chairs, or furniture so floor hazards are never placed on human bodies or clothing.
   - `src/perception/video_source.py`: Dual-mode video ingestion supporting live webcams, pre-recorded MP4 video files, and looping image sequence directories.
   - `src/perception/detector.py`: `ObstacleDetector` integrating YOLOv8n, hazard heuristics, non-blocking thread safety, 2-frame temporal debouncing (hysteresis) to eliminate flickering, and OpenCV visual HUD annotation.
   - `demo_phase2.py`: Interactive CLI and visual GUI runner for testing perception on test frames, video files, or live webcams.

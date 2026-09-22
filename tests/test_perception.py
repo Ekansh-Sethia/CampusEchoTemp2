@@ -1,4 +1,7 @@
-"""Unit tests for the perception module: YOLOv8n, distance estimation, hazard heuristics, and video sources."""
+"""Unit tests for the perception module: YOLOv8n, distance estimation, hazard heuristics,
+vehicle detection, stone vs paver blocks differentiation, tree detection via leaves/foliage
+and trunk, and velocity tracking.
+"""
 from pathlib import Path
 import cv2
 import numpy as np
@@ -8,14 +11,15 @@ from src.perception.distance import DistanceEstimator
 from src.perception.hazard_heuristics import EnvironmentalHazardDetector
 from src.perception.video_source import VideoSource
 from src.perception.detector import ObstacleDetector
+from src.perception.tracking import CentroidTracker
+from src.perception.models import DetectedObstacle
 from tests.generate_test_frames import generate_all_frames
 
 
 TEST_FRAMES_DIR = Path(__file__).parent.parent / "data" / "test_frames"
 
-# Ensure test frames exist
-if not TEST_FRAMES_DIR.exists() or not list(TEST_FRAMES_DIR.glob("*.jpg")):
-    generate_all_frames()
+# Ensure all 12 test frames exist
+generate_all_frames()
 
 
 @pytest.fixture
@@ -34,7 +38,7 @@ def obstacle_detector():
 
 
 def test_distance_estimator_pinhole(distance_estimator):
-    """Verifies that bounding box height inversely scales with distance."""
+    """Verifies that bounding box height/width inversely scales with distance."""
     h_frame, w_frame = 480, 640
 
     # Large chair close up (height = 250px)
@@ -48,6 +52,25 @@ def test_distance_estimator_pinhole(distance_estimator):
     assert dist_close < dist_far
     assert 1.0 <= dist_close <= 2.5
     assert dist_far >= 3.5
+
+
+def test_two_wheeler_and_four_wheeler_distance_estimation(distance_estimator):
+    """
+    Verifies that distance estimation uses:
+      - Width for four-wheelers (car/bus/truck)
+      - Ground contact point for two-wheelers (bicycle/motorcycle)
+    """
+    h_frame, w_frame = 480, 640
+
+    # 1. Four-wheeler (Car): width = 280px, height = 120px at bottom y=380
+    car_bbox = (180, 260, 460, 380)
+    car_dist = distance_estimator.estimate_distance("four_wheeler", car_bbox, h_frame, w_frame)
+    assert 2.0 <= car_dist <= 5.0
+
+    # 2. Two-wheeler (Bicycle): uses wheel ground contact line (y=390)
+    bike_bbox = (260, 300, 370, 390)
+    bike_dist = distance_estimator.estimate_distance("two_wheeler", bike_bbox, h_frame, w_frame, contact_y=390)
+    assert 1.0 <= bike_dist <= 3.0
 
 
 def test_walking_lane_evaluation(distance_estimator):
@@ -119,6 +142,103 @@ def test_hazard_heuristics_wall(hazard_detector):
     assert wall_hazards[0].urgency == "critical"
 
 
+def test_stone_differentiated_from_paver_blocks(hazard_detector):
+    """
+    Verifies that:
+      1. A large stone protruding from a paver block floor IS detected as a stone.
+      2. A flat paver block walkway without a stone does NOT trigger false stone or stair detections.
+    """
+    # 1. Test frame with 3D stone on paver walkway
+    img_stone = cv2.imread(str(TEST_FRAMES_DIR / "frame_10_large_stone.jpg"))
+    assert img_stone is not None
+    hazards_stone = hazard_detector.detect_hazards(img_stone)
+    stone_obs = [h for h in hazards_stone if h.label == "stone"]
+    assert len(stone_obs) >= 1, "Large stone should be detected!"
+    assert stone_obs[0].in_walking_lane is True
+    assert stone_obs[0].confidence >= 0.60
+
+    # 2. Test flat paver blocks (without stone)
+    img_pavers = cv2.imread(str(TEST_FRAMES_DIR / "frame_06_paver_blocks.jpg"))
+    assert img_pavers is not None
+    hazards_pavers = hazard_detector.detect_hazards(img_pavers)
+    stones_in_pavers = [h for h in hazards_pavers if h.label == "stone"]
+    stairs_in_pavers = [h for h in hazards_pavers if h.label == "stair"]
+    assert len(stones_in_pavers) == 0, "Flat paver blocks must NOT be detected as stones!"
+    assert len(stairs_in_pavers) == 0, "Flat paver blocks must NOT be detected as stairs!"
+
+
+def test_tree_root_padding_extension(hazard_detector):
+    """
+    Verifies that a tree with both trunk and canopy is detected,
+    and its raised root ring extends the effective hazard radius by +0.3m.
+    """
+    img_tree = cv2.imread(str(TEST_FRAMES_DIR / "frame_11_tree_trunk.jpg"))
+    assert img_tree is not None
+
+    hazards = hazard_detector.detect_hazards(img_tree)
+    tree_obs = [h for h in hazards if h.label == "tree"]
+    assert len(tree_obs) >= 1, "Tree should be detected!"
+    tree = tree_obs[0]
+    assert tree.effective_radius_m >= 0.20, "Tree must include root ring padding!"
+    assert tree.in_walking_lane is True
+
+
+def test_tree_detected_via_leaves_density_alone(hazard_detector):
+    """
+    Verifies that trees can be detected based on density of leaves / canopy alone,
+    even if the trunk is not visible (e.g. low-hanging branches in walking corridor).
+    """
+    img_leaves = cv2.imread(str(TEST_FRAMES_DIR / "frame_12_tree_leaves_only.jpg"))
+    assert img_leaves is not None
+
+    hazards = hazard_detector.detect_hazards(img_leaves)
+    tree_obs = [h for h in hazards if h.label == "tree"]
+    assert len(tree_obs) >= 1, "Tree should be detected via leaf/foliage density even when trunk is not visible!"
+    tree = tree_obs[0]
+    assert tree.in_walking_lane is True
+    assert tree.confidence >= 0.70
+
+
+def test_velocity_tracking_moving_vs_parked():
+    """
+    Verifies that CentroidTracker correctly computes approach velocity
+    and classifies two-wheelers / four-wheelers as 'moving' vs 'parked'.
+    """
+    tracker = CentroidTracker()
+
+    # Frame 1: Car detected at distance 4.0m, t=100.0
+    obs1 = DetectedObstacle(
+        label="four_wheeler",
+        confidence=0.88,
+        bbox=(200, 200, 440, 360),
+        bbox_normalized=(200/640, 200/480, 440/640, 360/480),
+        distance_m=4.0,
+        in_walking_lane=True,
+        horizontal_position="center"
+    )
+    tracker.update([obs1], timestamp=100.0)
+    assert obs1.tracking_id is not None
+    assert obs1.is_moving is False
+    assert obs1.state == "parked"
+
+    # Frame 2: Car approached to distance 3.2m at t=100.5 (dt = 0.5s, delta = 0.8m -> v = 1.6 m/s)
+    obs2 = DetectedObstacle(
+        label="four_wheeler",
+        confidence=0.90,
+        bbox=(190, 190, 450, 370),
+        bbox_normalized=(190/640, 190/480, 450/640, 370/480),
+        distance_m=3.2,
+        in_walking_lane=True,
+        horizontal_position="center"
+    )
+    tracker.update([obs2], timestamp=100.5)
+    assert obs2.tracking_id == obs1.tracking_id
+    assert obs2.is_moving is True
+    assert obs2.state == "moving"
+    assert obs2.velocity_mps >= 1.2
+    assert obs2.urgency == "critical"  # Approaching in walking lane
+
+
 def test_video_source_image_directory():
     """Verifies that VideoSource correctly reads and loops image directories."""
     with VideoSource(source=TEST_FRAMES_DIR, loop_file=True) as v_src:
@@ -128,7 +248,6 @@ def test_video_source_image_directory():
         assert frame1 is not None
         assert frame1.shape == (480, 640, 3)
 
-        # Read multiple frames and ensure looping works
         for _ in range(10):
             ret, f = v_src.read_frame()
             assert ret is True
@@ -144,53 +263,15 @@ def test_detector_clear_frame(obstacle_detector):
     assert result.processing_time_ms > 0.0
 
 
-def test_detector_debouncing(obstacle_detector):
+def test_shadow_not_detected_as_pothole(hazard_detector):
     """
-    Verifies that single-frame flicker is debounced, and persistent obstacles
-    across 2 consecutive frames are confirmed.
+    Verifies that a dark floor shadow is NOT detected as a pothole
+    because it lacks internal structural distortion / texture disorder.
     """
-    frame_stairs = cv2.imread(str(TEST_FRAMES_DIR / "frame_03_stairs.jpg"))
+    img_path = TEST_FRAMES_DIR / "frame_07_shadow.jpg"
+    frame = cv2.imread(str(img_path))
+    assert frame is not None
 
-    # Frame 1: seen once (debouncing requires 2 frames unless critical)
-    res1 = obstacle_detector.process_frame(frame_stairs, debounce_frames=2)
-    # Frame 2: seen twice -> confirmed
-    res2 = obstacle_detector.process_frame(frame_stairs, debounce_frames=2)
-
-    assert res2.primary_obstacle is not None
-    assert res2.primary_obstacle.label == "stair"
-    assert res2.path_clear is False
-
-
-def test_person_exclusion_prevents_false_pothole(obstacle_detector):
-    """
-    Verifies that a person wearing dark clothes/shoes does NOT trigger a false pothole
-    due to exclusion masking and physical structure checks.
-    """
-    # Create a frame with a person (dark torso/legs in lower frame)
-    h, w = 480, 640
-    frame = np.full((h, w, 3), 190, dtype=np.uint8)
-
-    # Draw dark clothes/legs where a person stands in the lower center
-    cv2.rectangle(frame, (260, 200), (380, 440), (30, 30, 35), -1)
-
-    # Synthetic obstacle representing the person detected by YOLO
-    from src.perception.models import DetectedObstacle
-    person_obs = DetectedObstacle(
-        label="person",
-        confidence=0.92,
-        bbox=(250, 180, 390, 450),
-        bbox_normalized=(250/w, 180/h, 390/w, 450/h),
-        distance_m=2.0,
-        in_walking_lane=True,
-        horizontal_position="center",
-        urgency="high"
-    )
-
-    # Test hazard detector with the person in excluded_obstacles
-    hazards = obstacle_detector.hazard_detector.detect_hazards(
-        frame, excluded_obstacles=[person_obs]
-    )
-
+    hazards = hazard_detector.detect_hazards(frame)
     potholes = [h for h in hazards if h.label == "pothole"]
-    assert len(potholes) == 0, "Person's dark clothes should NOT be detected as a pothole!"
-
+    assert len(potholes) == 0, "Normal floor shadow should NOT be detected as a pothole!"

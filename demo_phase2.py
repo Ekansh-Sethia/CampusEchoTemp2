@@ -122,8 +122,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-frames",
         type=int,
-        default=150,
-        help="Maximum frames to process in demo (default: 150)"
+        default=1000,
+        help="Maximum frames to process in demo (default: 100)"
     )
     args = parser.parse_args()
 

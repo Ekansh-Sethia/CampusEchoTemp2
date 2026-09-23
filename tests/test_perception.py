@@ -275,3 +275,49 @@ def test_shadow_not_detected_as_pothole(hazard_detector):
     hazards = hazard_detector.detect_hazards(frame)
     potholes = [h for h in hazards if h.label == "pothole"]
     assert len(potholes) == 0, "Normal floor shadow should NOT be detected as a pothole!"
+
+
+def test_dappled_sunlight_not_detected_as_stone(hazard_detector):
+    """
+    Verifies that mottled/dappled sunlight patches under tree canopies
+    are NOT detected as stones (suppressed by multi-blob, softness, and solidity checks).
+    """
+    img_dapple = cv2.imread(str(TEST_FRAMES_DIR / "frame_13_dappled_tree_shadow.jpg"))
+    assert img_dapple is not None
+
+    hazards = hazard_detector.detect_hazards(img_dapple)
+    stones = [h for h in hazards if h.label == "stone"]
+    assert len(stones) == 0, "Dappled tree canopy sunlight must NOT be detected as stones!"
+
+
+def test_pothole_in_shadow_correctly_detected(hazard_detector):
+    """
+    Verifies that a real fractured pothole sitting inside a shadow
+    IS STILL correctly detected as a pothole (not over-suppressed),
+    due to genuine internal structural disorder and roughness disparity.
+    """
+    img_pothole_shd = cv2.imread(str(TEST_FRAMES_DIR / "frame_14_pothole_in_shadow.jpg"))
+    assert img_pothole_shd is not None
+
+    hazards = hazard_detector.detect_hazards(img_pothole_shd)
+    potholes = [h for h in hazards if h.label == "pothole"]
+    assert len(potholes) >= 1, "Real pothole in shadow must still be detected!"
+    pothole = potholes[0]
+    assert pothole.confidence >= 0.60
+    assert pothole.shadow_likelihood <= 0.25, "Real pothole in shadow should have low shadow likelihood penalty!"
+
+
+def test_stone_in_full_sun_correctly_detected(hazard_detector):
+    """
+    Verifies that a real 3D stone sitting in direct full midday sunlight
+    IS correctly detected as a stone, retaining high confidence and low shadow likelihood.
+    """
+    img_stone_sun = cv2.imread(str(TEST_FRAMES_DIR / "frame_15_stone_in_full_sun.jpg"))
+    assert img_stone_sun is not None
+
+    hazards = hazard_detector.detect_hazards(img_stone_sun)
+    stones = [h for h in hazards if h.label == "stone"]
+    assert len(stones) >= 1, "Real stone in full sunlight must be detected!"
+    stone = stones[0]
+    assert stone.confidence >= 0.60
+    assert stone.shadow_likelihood <= 0.25, "Real stone should have low shadow likelihood penalty!"

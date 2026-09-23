@@ -10,6 +10,7 @@ import numpy as np
 from .distance import DistanceEstimator
 from .hazard_heuristics import EnvironmentalHazardDetector
 from .models import DetectedObstacle, FramePerceptionResult
+from .shadow_filter import ShadowLightAnalyzer
 from .tracking import CentroidTracker
 
 
@@ -57,7 +58,8 @@ class ObstacleDetector:
         self.enable_heuristics = enable_heuristics
 
         self.distance_estimator = DistanceEstimator(focal_length_px)
-        self.hazard_detector = EnvironmentalHazardDetector(self.distance_estimator)
+        self.shadow_analyzer = ShadowLightAnalyzer()
+        self.hazard_detector = EnvironmentalHazardDetector(self.distance_estimator, self.shadow_analyzer)
         self.tracker = CentroidTracker()
 
         self._lock = threading.Lock()
@@ -172,8 +174,21 @@ class ObstacleDetector:
                     current_labels_seen.add(hazard.label)
                     detected_obstacles.append(hazard)
 
-            # 3. Kinematic Tracking across frames (velocity, moving vs parked state)
+            # 3. Apply Shadow/Light Analysis to uncalibrated obstacles
             now_ts = time.time()
+            for obs in detected_obstacles:
+                if obs.shadow_likelihood == 0.0 and obs.label in ("stone", "pothole", "stair"):
+                    shd, cal_conf = self.shadow_analyzer.analyze_obstacle(
+                        frame, obs.bbox, obs.label, obs.confidence, timestamp=now_ts
+                    )
+                    obs.shadow_likelihood = shd
+                    obs.raw_confidence = obs.confidence
+                    obs.confidence = cal_conf
+
+            # Suppress obstacles whose confidence dropped below threshold due to shadow penalty
+            detected_obstacles = [o for o in detected_obstacles if o.confidence >= self.confidence_threshold]
+
+            # 4. Kinematic Tracking across frames (velocity, moving vs parked state)
             self.tracker.update(detected_obstacles, timestamp=now_ts)
 
             # 4. Apply Temporal Debounce / Hysteresis
@@ -288,9 +303,10 @@ class ObstacleDetector:
             elif obs.state == "parked":
                 state_tag = " [PARKED]"
 
+            shd_tag = f" [SHD:{obs.shadow_likelihood:.2f}]" if obs.shadow_likelihood > 0 else ""
             root_tag = " [+ROOT]" if (obs.label == "tree" and obs.effective_radius_m > 0) else ""
 
-            label_text = f"{obs.label.upper()} {obs.confidence:.2f} | {obs.distance_m}m{state_tag}{root_tag}{lane_tag}"
+            label_text = f"{obs.label.upper()} {obs.confidence:.2f}{shd_tag} | {obs.distance_m}m{state_tag}{root_tag}{lane_tag}"
 
             # Label background box
             (tw, th), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
@@ -316,8 +332,9 @@ class ObstacleDetector:
         hud_text = f"FPS: {result.fps} | Latency: {result.processing_time_ms}ms"
         if result.primary_obstacle:
             state_info = f" ({result.primary_obstacle.state.upper()})" if result.primary_obstacle.state != "static" else ""
+            shd_hud = f" (Shd:{result.primary_obstacle.shadow_likelihood:.2f})" if result.primary_obstacle.shadow_likelihood > 0 else ""
             status_text = (
-                f"HAZARD: {result.primary_obstacle.label.upper()}{state_info} "
+                f"HAZARD: {result.primary_obstacle.label.upper()}{state_info}{shd_hud} "
                 f"({result.primary_obstacle.distance_m}m) - {result.primary_obstacle.urgency.upper()}"
             )
             status_color = (0, 0, 255) if result.primary_obstacle.urgency in ("critical", "high") else (0, 140, 255)

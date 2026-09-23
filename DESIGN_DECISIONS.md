@@ -83,6 +83,33 @@ Each phase section documents:
   - Monocular distance estimation relies on assumed standard object dimensions and may vary if an obstacle is unusually sized.
   - Extreme low-light or unlit environments may degrade camera visibility (handled by Tier 3 human escalation in Phase 4).
 
+### Phase 2 Addendum: Shadow/Light False Positive Filtering Layer (Bug Fix & Architecture Enhancement)
+
+- **The Bug & Root Cause**:
+  - *Symptom 1:* Hard contrast transitions between direct sunlight and shadow on walking surfaces were being misclassified as stairs or potholes.
+  - *Symptom 2:* Mottled/dappled sunlight shining through tree leaves onto shaded paths was being misclassified as stones / rubble.
+  - *Root Cause:* Monocular 2D edge detectors key off sharp luminance contrast gradients. A cast shadow or sun patch produces a sharp light-to-dark transition in 2D that mimics a step riser, pothole rim, or stone outline, but completely lacks 3D physical elevation, depth disparity, and material change.
+- **What Was Built (`src/perception/shadow_filter.py`)**:
+  - **A. Temporal / Motion Cross-Check (`TemporalStabilityTracker`)**: Tracks candidate regions across consecutive frames ($N=8$). Fluttering/flickering light patterns caused by wind moving canopy leaves produce high intensity standard deviation ($\sigma(I) \ge 10$), boosting the shadow likelihood score. Conversely, rock-solid stability over $\ge 5$ frames confirms static physical geometry.
+  - **B. Shadow-Specific Color & Texture Checks (`ShadowLightAnalyzer`)**:
+    - *HSV Chromaticity Invariance:* Evaluates candidate interior vs. surrounding ground. Shadows preserve underlying surface Hue and Saturation ($|\Delta H| \le 14^\circ$, $|\Delta S| \le 26$), differing only in brightness ($V$). Real potholes/stones have different material colors or moisture.
+    - *Laplacian Texture Disparity:* Shadows have identical texture roughness to the surrounding pavement ($R_{\text{tex}} \approx 1.0$). Real potholes or rubble have broken gravel, cavities, or fractured surfaces ($R_{\text{tex}} \ge 1.9\times$), guaranteeing potholes in shadow are not over-suppressed.
+  - **C. Dappled Canopy Shape Signature**:
+    - *Multi-Blob Clustering:* Dappled sunlight occurs in clusters ($\ge 3$ nearby bright patches within $150\text{px}$ radius).
+    - *Contour Solidity Check:* Dappled light patches have low solidity ($\text{Area} / \text{ConvexHullArea} < 0.72$) due to leaf mottling; stones are compact with solidity $\ge 0.85$.
+    - *Penumbra Edge Softness:* Diffused atmospheric/diffraction penumbra borders ($>4\text{px}$) vs. steep contact edges on 3D stones.
+  - **D. Geometric Plausibility**: Ground plane distance calibration prevents non-ground artifacts from triggering floor hazard checks.
+  - **E. Sun-Angle / Ambient Lighting Parameter**: Exposes `ambient_sun_factor` (default 1.0; 1.25 for harsh midday direct sunlight, 0.70 for overcast conditions).
+  - **F. Proportional Confidence Recalibration**: Rather than a brittle binary filter, calculates continuous `shadow_likelihood` $\in [0.0, 1.0]$ and applies calibrated confidence penalties:
+    $$\text{calibrated\_conf} = \text{raw\_conf} \times (1.0 - \text{penalty})$$
+    Downweights questionable detections into Tier 2 (HEDGE) rather than triggering false Tier 1 BLOCKED reroutes.
+- **Verification & Hard Test Cases**:
+  - `frame_13_dappled_tree_shadow.jpg` (dappled sunlight) $\rightarrow$ `shadow_likelihood >= 0.70`, stone suppressed, path reported safe.
+  - `frame_14_pothole_in_shadow.jpg` (pothole inside shade) $\rightarrow$ `shadow_likelihood <= 0.05`, correctly detected as pothole.
+  - `frame_15_stone_in_full_sun.jpg` (stone in bright sun) $\rightarrow$ `shadow_likelihood <= 0.14`, correctly detected as stone.
+- **Known Remaining Limitations**:
+  - Intense specular glare on wet pavements or polished marble may require polarimetric or multi-spectral sensing in extreme conditions.
+
 ---
 
 ## Phase 3: EasyOCR Sign Reading & Landmark Localization Engine

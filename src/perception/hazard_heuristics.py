@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 from .models import DetectedObstacle
 from .distance import DistanceEstimator
+from .shadow_filter import ShadowLightAnalyzer
 
 
 class EnvironmentalHazardDetector:
@@ -16,8 +17,13 @@ class EnvironmentalHazardDetector:
     and architectural pillars/gates.
     """
 
-    def __init__(self, distance_estimator: Optional[DistanceEstimator] = None):
+    def __init__(
+        self,
+        distance_estimator: Optional[DistanceEstimator] = None,
+        shadow_analyzer: Optional[ShadowLightAnalyzer] = None
+    ):
         self.distance_estimator = distance_estimator or DistanceEstimator()
+        self.shadow_analyzer = shadow_analyzer or ShadowLightAnalyzer()
 
     def detect_hazards(
         self,
@@ -223,9 +229,18 @@ class EnvironmentalHazardDetector:
         dist = self.distance_estimator.estimate_distance("stair", bbox, h, w)
         in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(bbox, w, h, dist)
 
+        raw_conf = round(min(0.88, confidence), 2)
+        shd_score, cal_conf = self.shadow_analyzer.analyze_obstacle(
+            frame, bbox, "stair", raw_conf
+        )
+        if shd_score >= 0.75:
+            return None
+
         return DetectedObstacle(
             label="stair",
-            confidence=round(min(0.88, confidence), 2),
+            confidence=cal_conf,
+            raw_confidence=raw_conf,
+            shadow_likelihood=shd_score,
             bbox=bbox,
             bbox_normalized=(xmin / w, ymin / h, xmax / w, ymax / h),
             distance_m=dist,
@@ -520,15 +535,27 @@ class EnvironmentalHazardDetector:
                 abs_ymax = abs_ymin + ch
                 bbox = (abs_xmin, abs_ymin, abs_xmax, abs_ymax)
 
-                confidence = min(0.85, 0.65 + 0.05 * min(4.0, distortion_ratio))
+                raw_conf = round(min(0.85, 0.65 + 0.05 * min(4.0, distortion_ratio)), 2)
+                shd_score, cal_conf = self.shadow_analyzer.analyze_obstacle(
+                    frame, bbox, "pothole", raw_conf
+                )
+
+                if shd_score >= 0.75:
+                    continue
+
                 dist = self.distance_estimator.estimate_distance("pothole", bbox, h, w)
                 in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
                     bbox, w, h, dist
                 )
 
+                if shd_score >= 0.40 and urgency == "critical":
+                    urgency = "high"
+
                 return DetectedObstacle(
                     label="pothole",
-                    confidence=round(confidence, 2),
+                    confidence=cal_conf,
+                    raw_confidence=raw_conf,
+                    shadow_likelihood=shd_score,
                     bbox=bbox,
                     bbox_normalized=(abs_xmin / w, abs_ymin / h, abs_xmax / w, abs_ymax / h),
                     distance_m=dist,
@@ -611,14 +638,28 @@ class EnvironmentalHazardDetector:
                 abs_ymax = abs_ymin + ch
                 bbox = (abs_xmin, abs_ymin, abs_xmax, abs_ymax)
 
+                raw_conf = 0.72
+                shd_score, cal_conf = self.shadow_analyzer.analyze_obstacle(
+                    frame, bbox, "stone", raw_conf
+                )
+
+                # Suppress if heavily flagged as dappled canopy light / flat shadow
+                if shd_score >= 0.65:
+                    continue
+
                 dist = self.distance_estimator.estimate_distance("stone", bbox, h, w, contact_y=abs_ymax)
                 in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
                     bbox, w, h, dist
                 )
 
+                if shd_score >= 0.40 and urgency == "critical":
+                    urgency = "high"
+
                 stones.append(DetectedObstacle(
                     label="stone",
-                    confidence=0.72,
+                    confidence=cal_conf,
+                    raw_confidence=raw_conf,
+                    shadow_likelihood=shd_score,
                     bbox=bbox,
                     bbox_normalized=(abs_xmin / w, abs_ymin / h, abs_xmax / w, abs_ymax / h),
                     distance_m=dist,

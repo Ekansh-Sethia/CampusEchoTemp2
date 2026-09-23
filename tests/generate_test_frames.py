@@ -165,7 +165,73 @@ def generate_all_frames():
             cv2.circle(frame_leaves_only, (lx + np.random.randint(-5, 6), ly + np.random.randint(-5, 6)), 9, (25, 155, 55), -1)
     cv2.imwrite(str(OUTPUT_DIR / "frame_12_tree_leaves_only.jpg"), frame_leaves_only)
 
-    print(f"Generated 12 test frames in: {OUTPUT_DIR}")
+    # 13. Dappled Tree Shadow on Walkway (Mottled sunlight through leaves - SHOULD NOT BE DETECTED AS STONE)
+    frame_dapple = draw_base_hallway()
+    # Large canopy shadow across walking corridor
+    dapple_overlay = frame_dapple.copy()
+    cv2.rectangle(dapple_overlay, (int(640 * 0.20), int(480 * 0.40)), (int(640 * 0.80), 480), (70, 70, 70), -1)
+    cv2.addWeighted(dapple_overlay, 0.45, frame_dapple, 0.55, 0, frame_dapple)
+    # Dappled bright sunlight patches through leaves (mottled, irregular, low solidity multi-blob cluster)
+    sun_patches = [
+        (300, 360, 32, 18, -15),
+        (350, 375, 28, 16, 25),
+        (260, 385, 25, 14, -30),
+        (325, 410, 35, 18, 10),
+        (380, 350, 24, 15, 35)
+    ]
+    for px, py, ax1, ax2, rot in sun_patches:
+        patch_layer = frame_dapple.copy()
+        cv2.ellipse(patch_layer, (px, py), (ax1, ax2), rot, 0, 360, (200, 200, 200), -1)
+        # Soft penumbra blend
+        cv2.addWeighted(patch_layer, 0.50, frame_dapple, 0.50, 0, frame_dapple)
+    cv2.imwrite(str(OUTPUT_DIR / "frame_13_dappled_tree_shadow.jpg"), frame_dapple)
+
+    # 14. Real Pothole INSIDE a Shadowed Area (SHOULD STILL BE DETECTED AS POTHOLE)
+    frame_pothole_shadow = draw_base_hallway()
+    # Large shadow across floor
+    shadow_base = frame_pothole_shadow.copy()
+    cv2.rectangle(shadow_base, (int(640 * 0.15), int(480 * 0.40)), (int(640 * 0.85), 480), (65, 65, 65), -1)
+    cv2.addWeighted(shadow_base, 0.45, frame_pothole_shadow, 0.55, 0, frame_pothole_shadow)
+    # Genuine fractured jagged pothole inside the shaded zone
+    np.random.seed(101)
+    angles = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    r_base_x, r_base_y = 70, 30
+    p_pts = []
+    for a in angles:
+        noise = np.random.uniform(0.75, 1.30)
+        px = int(320 + r_base_x * np.cos(a) * noise)
+        py = int(380 + r_base_y * np.sin(a) * noise)
+        p_pts.append([px, py])
+    poly_pts_shd = np.array(p_pts, np.int32)
+    # Fill pothole cavity with deep dark crumbled asphalt
+    cv2.fillPoly(frame_pothole_shadow, [poly_pts_shd], (20, 20, 25))
+    # Add fractured gravel texture (high Laplacian roughness)
+    noise_patch2 = np.random.randint(-55, 55, (80, 180, 3), dtype=np.int16)
+    p_roi2 = frame_pothole_shadow[340:420, 230:410].astype(np.int16)
+    mask_patch2 = np.zeros((80, 180), dtype=np.uint8)
+    shifted_poly2 = poly_pts_shd - np.array([230, 340])
+    cv2.fillPoly(mask_patch2, [shifted_poly2], 255)
+    p_roi2[mask_patch2 > 0] = np.clip(p_roi2[mask_patch2 > 0] + noise_patch2[mask_patch2 > 0], 5, 80)
+    frame_pothole_shadow[340:420, 230:410] = p_roi2.astype(np.uint8)
+    cv2.polylines(frame_pothole_shadow, [poly_pts_shd], True, (65, 65, 70), 3)
+    cv2.imwrite(str(OUTPUT_DIR / "frame_14_pothole_in_shadow.jpg"), frame_pothole_shadow)
+
+    # 15. Real Stone in Full Direct Sunlight (SHOULD BE DETECTED AS STONE)
+    frame_stone_sun = draw_base_hallway()
+    # Bright midday sunlight on walkway
+    sun_overlay = frame_stone_sun.copy()
+    cv2.rectangle(sun_overlay, (0, int(480 * 0.40)), (640, 480), (220, 220, 215), -1)
+    cv2.addWeighted(sun_overlay, 0.35, frame_stone_sun, 0.65, 0, frame_stone_sun)
+    # Dark cast shadow under stone onto bright ground
+    cv2.ellipse(frame_stone_sun, (330, 395), (55, 12), 0, 0, 360, (40, 40, 40), -1)
+    # 3D Compact Stone body
+    stone_sun_pts = np.array([[285, 390], [295, 345], [325, 325], [365, 335], [380, 375], [365, 395], [315, 400]], np.int32)
+    cv2.fillPoly(frame_stone_sun, [stone_sun_pts], (100, 100, 105))
+    # Sunlit highlight crown on top
+    cv2.ellipse(frame_stone_sun, (330, 350), (25, 12), -10, 0, 360, (170, 170, 175), -1)
+    cv2.imwrite(str(OUTPUT_DIR / "frame_15_stone_in_full_sun.jpg"), frame_stone_sun)
+
+    print(f"Generated 15 test frames in: {OUTPUT_DIR}")
 
 
 if __name__ == "__main__":

@@ -71,8 +71,9 @@ def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int =
 
             for obs in result.obstacles:
                 lane_flag = "IN LANE" if obs.in_walking_lane else "off-path"
+                shd_str = f" | ShdLikelihood: {obs.shadow_likelihood:.2f}" if obs.shadow_likelihood > 0 else ""
                 print(
-                    f"    -> {obs.label:<12} | Conf: {obs.confidence:.2f} | "
+                    f"    -> {obs.label:<12} | Conf: {obs.confidence:.2f}{shd_str} | "
                     f"Dist: {obs.distance_m:4.1f}m | Pos: {obs.horizontal_position:<6} | {lane_flag}"
                 )
 

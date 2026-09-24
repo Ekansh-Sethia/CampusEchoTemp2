@@ -114,40 +114,111 @@ Each phase section documents:
 
 ## Phase 3: EasyOCR Sign Reading & Landmark Localization Engine
 
-*(To be filled upon completion of Phase 3)*
-
 - **What Was Built**:
+  - `src/perception/text_reader.py`: `SignpostReader` wrapping EasyOCR for real-time text extraction from campus signage images. Applies Gaussian blur pre-processing, CLAHE histogram equalization for contrast enhancement in harsh outdoor lighting, and a lightweight confidence threshold gate ($\ge 0.40$) to suppress noisy low-confidence reads.
+  - `src/routing/landmark_matcher.py`: `LandmarkMatcher` performing fuzzy multi-strategy matching between raw OCR text output and known campus node names / expected signpost tokens. Uses Levenshtein edit-distance similarity (threshold $\ge 0.60$) via `rapidfuzz`, plus exact substring containment matching, to tolerate OCR typos, partial reads, and rotated/partial signs.
+  - `src/routing/navigator.py`: `CampusNavigator` — the stateful real-time navigation tracker. Stores `current_node_id`, `destination_node_id`, `active_route`, and `current_step_index`. Processes landmark detection events via `process_landmark_event()` to advance waypoints, detect off-route position corrections, and emit `NavigationEvent` objects with contextual voice instructions.
+  - `tests/test_ocr_localization.py`: 8 unit tests covering text normalisation, exact match, fuzzy typo tolerance, substring match, route initialisation, step advancement, destination arrival, and a full EasyOCR end-to-end synthetic landmark test.
 - **Technology & Libraries Used**:
+  - `easyocr==1.7.2` (Multi-language scene text recognition, installed `--no-deps` to prevent `opencv-headless` from overwriting the project's `opencv-python` GUI build).
+  - `rapidfuzz` (Levenshtein / Jaro-Winkler fuzzy string similarity for OCR typo tolerance).
+  - `pydantic>=2.0` (`LandmarkMatchResult`, `NavigationEvent` data models).
 - **Decision / Alternatives Considered / Why This One**:
+  - *Decision:* EasyOCR + RapidFuzz fuzzy matching.
+  - *Alternatives Considered:*
+    - Tesseract OCR: Lower out-of-box accuracy on real-world outdoor signs with perspective distortion.
+    - Google Cloud Vision API: Requires internet connectivity — unacceptable for a device that must function in campus dead zones.
+    - QR-code landmark markers: Requires physical infrastructure installation across campus.
+  - *Why This One:* EasyOCR runs fully offline, achieves $>90\%$ accuracy on sign fonts in well-lit conditions, and handles non-English text if campus signs include regional language characters. Fuzzy matching provides graceful degradation when partial reads or weathered signs are encountered.
+  - *EasyOCR Install Constraint:* Standard `pip install easyocr` installs `opencv-headless` as a dependency, which overwrites `opencv-python` and destroys `cv2.imshow()` used by Phase 2's visual HUD. Resolved by installing with `--no-deps` and manually pinning only pure-Python EasyOCR dependencies in `requirements.txt`.
 - **Functionality & Data Flow**:
+  - Camera frame → `SignpostReader.read_frame()` → list of `(text, confidence)` tuples.
+  - Each text string → `LandmarkMatcher.match()` → `LandmarkMatchResult` with `matched_node_id`, `similarity_score`, and `match_strategy` ("exact", "fuzzy", "substring", "sign_field").
+  - Match result → `CampusNavigator.process_landmark_event()` → `NavigationEvent` with `event_type` ("WAYPOINT_REACHED", "DESTINATION_REACHED", "OFF_ROUTE_LANDMARK"), `voice_instruction`, and `remaining_distance_m`.
 - **Inputs & Outputs**:
+  - *Input:* BGR image frame (`np.ndarray`), optionally `node_hint` (current expected node ID) for targeted matching.
+  - *Output:* `NavigationEvent` (or `None` if no landmark matched above confidence floor).
 - **Known Limitations**:
+  - OCR accuracy degrades significantly in direct glare on retroreflective sign materials (common on Indian campus signboards).
+  - Very small signs ($<60\text{px}$ text height) may not be reliably read without optical zoom.
 
 ---
 
-## Phase 4: 3-Tier Confidence Policy, Decaying Memory & Dynamic Rerouting
-
-*(To be filled upon completion of Phase 4)*
+## Phase 4: 3-Tier Confidence Policy, Decaying Hazard Memory & Dynamic Rerouting
 
 - **What Was Built**:
+  - `src/decision/confidence_policy.py`: `ConfidencePolicy` engine mapping a `DetectedObstacle`'s `(confidence, in_walking_lane, shadow_likelihood)` triple to one of three formal action tiers:
+    - **Tier 1 — BLOCKED** ($\text{conf} \ge 0.70$, in-lane): Obstacle confirmed real. Triggers Dijkstra reroute, graph edge penalty, hazard memory write, shared DB POST, and WebSocket broadcast.
+    - **Tier 2 — HEDGE** ($0.40 \le \text{conf} < 0.70$, or off-lane): Uncertain or lateral detection. Issues spoken caution, holds current route, logs for review.
+    - **Tier 3 — ESCALATE** ($\text{conf} < 0.40$, in-lane): Ambiguous in-path hazard. Sets escalation flag for Phase 6 caregiver notification; user is instructed to stop and wait.
+  - `src/decision/hazard_memory.py`: `HazardMemory` — in-memory store of `HazardRecord` objects with exponential time decay:
+    $$W(t) = W_0 \times e^{-\Delta t / \tau}$$
+    where $\tau$ is configurable per obstacle class (pothole: $120\text{s}$, vehicle: $45\text{s}$, tree: $300\text{s}$, pillar: $600\text{s}$). Records whose weight falls below $5\%$ of $W_0$ are automatically pruned and their graph edge penalties are removed. Re-detecting the same obstacle on the same edge refreshes `last_confirmed` and restores weight to $W_0$.
+  - `tests/test_decision.py`: 14 unit tests covering all tier boundaries, off-lane capping, shadow-penalized detection, decay mathematics, stale pruning, and manual removal.
 - **Technology & Libraries Used**:
+  - `pydantic>=2.0` (`PolicyDecision`, `HazardRecord` data models).
+  - Python `math.exp` (exponential decay — no external dep needed).
+  - Python `time` (monotonic real-world timestamps for decay $\Delta t$).
 - **Decision / Alternatives Considered / Why This One**:
+  - *Decision:* Continuous exponential decay with per-class $\tau$, rather than fixed TTL expiry.
+  - *Alternatives Considered:*
+    - Fixed time-to-live (TTL) per obstacle: Binary — obstacle is either fully active or fully gone, which causes abrupt graph weight jumps and potential oscillating reroutes near expiry.
+    - Bayesian occupancy grid: More principled probabilistically, but requires known map geometry and is too heavy for CPU-only real-time use.
+  - *Why This One:* Exponential decay provides a smooth, physically intuitive model — a freshly reported pothole carries full penalty, while an old report from 5 minutes ago (not re-confirmed) carries very little. This prevents phantom reroutes from long-expired reports while maintaining caution for freshly confirmed hazards.
+  - *Shadow integration:* Because `ShadowLightAnalyzer` already downscales `confidence` before `ConfidencePolicy` sees it, shadow-affected detections naturally land in Tier 2 (HEDGE) without any shadow-specific logic inside the policy itself. This preserves separation of concerns.
 - **Functionality & Data Flow**:
+  - `ObstacleDetector.process_frame()` → `DetectedObstacle` → `ConfidencePolicy.evaluate()` → `PolicyDecision`.
+  - `BLOCKED` path: → `HazardMemory.add_or_refresh()` → `CampusGraph.add_edge_penalty()` → `DijkstraRouter.find_route()` (reroute).
+  - `HEDGE` path: → spoken caution → no graph modification.
+  - `ESCALATE` path: → `escalation_triggered = True` flag → Phase 6 notification layer.
+  - Background decay worker calls `HazardMemory.decay_all()` and removes stale penalties from the graph on each tick.
 - **Inputs & Outputs**:
+  - *Input:* `DetectedObstacle` (from Phase 2 perception pipeline).
+  - *Output:* `PolicyDecision` with fields: `tier` (`ConfidenceTier`), `spoken_instruction` (`str`), `reroute_triggered` (`bool`), `escalation_triggered` (`bool`), `decay_tau_s` (`float`).
 - **Known Limitations**:
+  - In-memory `HazardMemory` is cleared on process restart. Persistence across restarts is handled by Phase 5's SQLite `ObstacleStore`.
+  - Decay $\tau$ values are currently hard-coded constants; a future version could learn adaptive $\tau$ per location from historical re-detection frequency.
 
 ---
 
 ## Phase 5: Shared Obstacle Database & Multi-User Synchronization
 
-*(To be filled upon completion of Phase 5)*
-
 - **What Was Built**:
+  - `src/db/schema.py`: SQLite schema initialisation with WAL (Write-Ahead Logging) journal mode. WAL mode enables safe concurrent reads from multiple users while one user writes — no table locks, no blocking.
+  - `src/db/obstacle_store.py`: `ObstacleStore` — synchronous, thread-safe SQLite persistence layer. Methods: `upsert(record)` (INSERT OR UPDATE with `MAX(confidence)` on conflict), `get_active(threshold)` (retrieves all non-stale records), `decay_tick(now)` (applies exponential decay to all rows, deletes stale entries, returns list of pruned IDs), `clear_edge(edge_id)`, and `remove(obstacle_id)`.
+  - `src/api/server.py`: FastAPI HTTP + WebSocket server exposing:
+    - `GET /status` — returns JSON of all active obstacles and count.
+    - `POST /obstacles` — accepts `HazardRecord`-shaped JSON, upserts to DB, broadcasts `obstacle_reported` event to all connected WebSocket clients.
+    - `POST /obstacles/{id}/clear` — manually removes an obstacle (user confirms path is clear), broadcasts `obstacle_cleared`.
+    - `GET /health` — liveness probe.
+    - `WebSocket /ws/telemetry` — on connect: sends full current hazard snapshot. On obstacle POST or decay tick: pushes `obstacle_reported` / `decay_tick` JSON to all connected clients. Supports `ping`/`status` commands from clients.
+  - `src/api/decay_worker.py` (inline in `server.py`): Background `asyncio.Task` launched via FastAPI `lifespan` context. Runs `ObstacleStore.decay_tick()` every 10 seconds, broadcasts updated hazard map to all WebSocket clients, and logs pruned obstacle IDs.
+  - `tests/test_db_and_sync.py`: 16 integration tests covering upsert, confidence MAX merge on conflict, decay mathematics, stale pruning, manual removal, `clear_edge`, multi-user upsert, REST endpoints, WebSocket snapshot-on-connect, obstacle broadcast, and ping/pong.
 - **Technology & Libraries Used**:
+  - `fastapi==0.141.1` + `uvicorn==0.53.0` (ASGI HTTP + WebSocket server).
+  - `sqlite3` (stdlib, WAL mode, `row_factory=sqlite3.Row` for named column access).
+  - `aiosqlite==0.22.1` (installed for future async upgrade path; current implementation uses sync `sqlite3` with short-lived connections which is sufficient for this load profile).
+  - `aiofiles==25.1.0`, `websockets==17.1` (async file I/O and WebSocket client support for demo and testing).
+  - `httpx==0.28.1` (HTTPX async/sync test client for FastAPI `TestClient`).
 - **Decision / Alternatives Considered / Why This One**:
+  - *Decision:* SQLite (WAL mode) + FastAPI WebSocket broadcast, rather than a heavier message broker.
+  - *Alternatives Considered:*
+    - Redis Pub/Sub: Would work well for real-time broadcast but adds a running Redis server as an infrastructure dependency. Unacceptable for a campus device that runs entirely offline.
+    - PostgreSQL with NOTIFY: Requires a Postgres server process — too heavy for a Raspberry Pi / laptop edge device.
+    - In-memory dict with no persistence: Means all obstacle history is lost on app restart or crash — unsafe for a safety-critical navigation tool.
+  - *Why This One:* SQLite with WAL requires zero infrastructure. It runs in-process, supports multiple readers concurrently, and persists hazard history across restarts. FastAPI's built-in WebSocket support provides the real-time broadcast layer with no additional broker. This architecture runs entirely offline on a laptop or edge device with no external dependencies.
+  - *Single-file DB path:* `data/obstacles.db` is `.gitignore`d (like all run-time data). On a co-developer's machine, the DB is created fresh on first run by `db_init()`.
 - **Functionality & Data Flow**:
+  - User 1 (`ObstacleDetector`) detects `BLOCKED` obstacle → `ConfidencePolicy` emits `PolicyDecision` → `POST /obstacles` → `ObstacleStore.upsert()` → `_broadcast()` to all WebSocket clients.
+  - User 2 (any connected WebSocket client) immediately receives `{event: "obstacle_reported", obstacle: {...}}` and updates their local Dijkstra graph edge weights.
+  - `DecayWorker` (10s tick) → `ObstacleStore.decay_tick()` → broadcast `{event: "decay_tick", pruned_ids: [...], active_hazards: [...]}` → all clients remove stale penalties from their local graphs.
 - **Inputs & Outputs**:
+  - *Input (REST):* `ObstacleReportRequest` JSON body with `edge_id`, `label`, `confidence`, `decay_tau_s`, `penalty_weight`, `reported_by`.
+  - *Output (REST):* `HazardRecord` JSON with all fields including `obstacle_id`, `active_weight`, `first_seen`, `last_confirmed`.
+  - *Output (WebSocket):* JSON events: `snapshot`, `obstacle_reported`, `obstacle_cleared`, `decay_tick`, `pong`, `status_response`.
 - **Known Limitations**:
+  - Currently single-server: All users must connect to the same `uvicorn` instance. A multi-server deployment would require a shared Redis or Postgres NOTIFY for cross-process broadcast (future roadmap).
+  - Decay ticks are server-driven at 10s intervals; a client that goes offline mid-session will have stale weights until it reconnects and receives the next broadcast snapshot.
 
 ---
 

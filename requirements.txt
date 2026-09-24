@@ -23,3 +23,6 @@ scikit-image==0.26.0
 lazy-loader==0.6
 imageio==2.37.4
 tifffile==2026.3.3
+aiofiles==25.1.0
+aiosqlite==0.22.1
+websockets==17.1

@@ -4,6 +4,7 @@ from .distance import DistanceEstimator
 from .hazard_heuristics import EnvironmentalHazardDetector
 from .video_source import VideoSource
 from .detector import ObstacleDetector
+from .text_reader import SignpostReader, SignDetection
 
 __all__ = [
     "DetectedObstacle",
@@ -12,4 +13,6 @@ __all__ = [
     "EnvironmentalHazardDetector",
     "VideoSource",
     "ObstacleDetector",
+    "SignpostReader",
+    "SignDetection",
 ]

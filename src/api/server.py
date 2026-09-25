@@ -1,29 +1,38 @@
 """
-FastAPI server for CampusEcho's Shared Obstacle Database & Multi-User Sync.
-Exposes REST endpoints and a WebSocket telemetry channel for real-time
-obstacle reporting and hazard map broadcasting across all connected users.
+FastAPI server for CampusEcho's Shared Obstacle Database, Multi-User Sync,
+Mode Control, and Dashboard static file serving.
 """
 import asyncio
 import json
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import List, Optional, Set
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from src.db.obstacle_store import ObstacleStore
 from src.decision.hazard_memory import HazardRecord
+from src.notifications.mode_router import ModeRouter, OutputMode
+from src.api.telemetry import (
+    make_voice_event, make_haptic_event, make_escalation_event,
+    EVENT_MODE_CHANGE,
+)
 
 
 # ─── Global State ──────────────────────────────────────────────────────────────
 
 store = ObstacleStore()
+mode_router = ModeRouter(mode=OutputMode.DUAL)
 _ws_clients: Set[WebSocket] = set()
 _decay_task: Optional[asyncio.Task] = None
 
-DECAY_TICK_INTERVAL_S = 10.0  # Run decay every 10 seconds
+DECAY_TICK_INTERVAL_S = 10.0
+STATIC_DIR = Path(__file__).parent.parent.parent / "static"
 
 
 # ─── Lifespan: Start/stop background decay worker ──────────────────────────────
@@ -48,8 +57,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="CampusEcho Obstacle API",
-    description="Shared obstacle database and multi-user WebSocket sync for CampusEcho.",
-    version="1.0.0",
+    description="Shared obstacle database, multi-user WebSocket sync, mode control, and dashboard for CampusEcho.",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
@@ -59,6 +68,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Mount static files (dashboard)
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
 # ─── Request / Response Schemas ─────────────────────────────────────────────────
@@ -81,7 +94,41 @@ class ActiveHazardsResponse(BaseModel):
     timestamp: float
 
 
+class ModeRequest(BaseModel):
+    """JSON body for POST /mode."""
+    mode: str  # "VOICE_ONLY" | "HAPTIC_ONLY" | "DUAL"
+
+
 # ─── REST Endpoints ──────────────────────────────────────────────────────────────
+
+@app.get("/dashboard", tags=["Dashboard"], include_in_schema=False)
+def serve_dashboard():
+    """Serves the Mission Control Dashboard HTML file."""
+    dashboard_path = STATIC_DIR / "dashboard.html"
+    if not dashboard_path.exists():
+        raise HTTPException(status_code=404, detail="Dashboard not found. Run from project root.")
+    return FileResponse(str(dashboard_path), media_type="text/html")
+
+
+@app.post("/mode", tags=["Control"])
+async def set_output_mode(body: ModeRequest):
+    """
+    Toggles the output mode (VOICE_ONLY / HAPTIC_ONLY / DUAL).
+    Broadcasts a mode_change event to all connected WebSocket clients.
+    """
+    global mode_router
+    try:
+        new_mode = OutputMode(body.mode)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid mode '{body.mode}'. Use VOICE_ONLY, HAPTIC_ONLY, or DUAL.")
+    mode_router.set_mode(new_mode)
+    await _broadcast({
+        "event": EVENT_MODE_CHANGE,
+        "mode": new_mode.value,
+        "timestamp": time.time(),
+    })
+    return {"status": "ok", "mode": new_mode.value}
+
 
 @app.get("/status", response_model=ActiveHazardsResponse, tags=["Obstacles"])
 def get_status():

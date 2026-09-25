@@ -1,0 +1,820 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CampusEcho | Mission Control Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap');
+
+  :root {
+    --bg-deep:     #0a0d14;
+    --bg-panel:    #111624;
+    --bg-card:     #161d2e;
+    --border:      #1e2a42;
+    --accent:      #6366f1;
+    --accent-glow: rgba(99,102,241,0.25);
+    --green:       #22c55e;
+    --amber:       #f59e0b;
+    --red:         #ef4444;
+    --red-glow:    rgba(239,68,68,0.3);
+    --text-1:      #f1f5f9;
+    --text-2:      #94a3b8;
+    --text-3:      #475569;
+    --radius:      12px;
+    --mono:        'JetBrains Mono', monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Inter', sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-1);
+    height: 100vh;
+    display: grid;
+    grid-template-rows: 56px 1fr 64px;
+    overflow: hidden;
+  }
+
+  /* ── Header ─────────────────────────────────────────────────────── */
+  header {
+    background: var(--bg-panel);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    z-index: 100;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 10px;
+    font-weight: 700; font-size: 1.1rem; letter-spacing: -.3px;
+  }
+  .logo-icon {
+    width: 30px; height: 30px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--accent), #818cf8);
+    display: flex; align-items: center; justify-content: center; font-size: 16px;
+  }
+  .status-pills { display: flex; gap: 10px; align-items: center; }
+  .pill {
+    padding: 4px 12px; border-radius: 20px; font-size: 0.72rem;
+    font-weight: 600; letter-spacing: .5px; text-transform: uppercase;
+    border: 1px solid var(--border);
+  }
+  .pill.connected { background: rgba(34,197,94,.15); color: var(--green); border-color: rgba(34,197,94,.3); }
+  .pill.disconnected { background: rgba(239,68,68,.15); color: var(--red); border-color: rgba(239,68,68,.3); }
+  .pill.mode { background: rgba(99,102,241,.15); color: #a5b4fc; border-color: rgba(99,102,241,.3); }
+  .header-fps { font-size: 0.75rem; color: var(--text-2); font-family: var(--mono); }
+
+  /* ── Main Grid ──────────────────────────────────────────────────── */
+  main {
+    display: grid;
+    grid-template-columns: 1fr 340px 300px;
+    gap: 1px;
+    background: var(--border);
+    overflow: hidden;
+  }
+  .panel {
+    background: var(--bg-panel);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .panel-title {
+    padding: 12px 16px;
+    font-size: 0.72rem; font-weight: 600; letter-spacing: .8px;
+    text-transform: uppercase; color: var(--text-2);
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+    flex-shrink: 0;
+  }
+  .panel-title-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--accent); flex-shrink: 0;
+  }
+
+  /* ── Video Panel ────────────────────────────────────────────────── */
+  #video-panel { position: relative; }
+  #camera-feed {
+    width: 100%; height: 100%;
+    object-fit: contain;
+    background: #000;
+    display: block;
+  }
+  .video-overlay {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    padding: 12px 16px;
+    background: linear-gradient(transparent, rgba(0,0,0,.85));
+    display: flex; justify-content: space-between; align-items: flex-end;
+  }
+  .video-stat { font-family: var(--mono); font-size: 0.72rem; color: #cbd5e1; }
+  .obstacle-badge {
+    padding: 4px 10px; border-radius: 6px; font-size: 0.72rem; font-weight: 600;
+    background: rgba(239,68,68,.2); color: #fca5a5; border: 1px solid rgba(239,68,68,.4);
+  }
+  .obstacle-badge.clear { background: rgba(34,197,94,.15); color: #86efac; border-color: rgba(34,197,94,.3); }
+
+  /* ── Campus Map Panel ───────────────────────────────────────────── */
+  #map-panel { min-width: 0; }
+  #campus-svg-wrap {
+    flex: 1; overflow: hidden; padding: 16px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #campus-svg { width: 100%; height: 100%; max-height: 420px; }
+
+  .svg-node {
+    cursor: pointer; transition: all .2s;
+  }
+  .svg-node circle { stroke-width: 2; transition: all .3s; }
+  .svg-node:hover circle { filter: brightness(1.3); }
+  .svg-node text { font-size: 9px; fill: var(--text-2); font-family: 'Inter', sans-serif; }
+
+  .svg-edge { stroke: var(--border); stroke-width: 3; fill: none; transition: stroke .4s, stroke-width .3s; }
+  .svg-edge.active-route { stroke: var(--accent); stroke-width: 4; }
+  .svg-edge.blocked { stroke: var(--red); stroke-width: 5; animation: edge-pulse 1.2s ease-in-out infinite; }
+
+  @keyframes edge-pulse {
+    0%, 100% { stroke-opacity: 1; }
+    50% { stroke-opacity: 0.4; }
+  }
+
+  /* Hazard pins */
+  .hazard-pin { transition: all .5s; }
+  .hazard-pin circle { transition: fill .6s, opacity .6s; }
+
+  /* Haptic Simulator */
+  #haptic-sim {
+    display: flex; justify-content: center; gap: 24px;
+    padding: 14px 16px; border-top: 1px solid var(--border); flex-shrink: 0;
+  }
+  .haptic-motor {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    font-size: 0.68rem; color: var(--text-2); font-weight: 500; letter-spacing: .3px;
+  }
+  .motor-ring {
+    width: 52px; height: 52px; border-radius: 50%;
+    border: 3px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    position: relative; transition: border-color .2s;
+    font-size: 18px;
+  }
+  .motor-ring.pulsing {
+    animation: ring-pulse .35s ease-out forwards;
+    border-color: var(--accent);
+    box-shadow: 0 0 18px var(--accent-glow);
+  }
+  @keyframes ring-pulse {
+    0%   { transform: scale(1);    opacity: 1; }
+    50%  { transform: scale(1.25); opacity: .85; }
+    100% { transform: scale(1);    opacity: 1; }
+  }
+
+  /* ── Reasoning Trail Panel ──────────────────────────────────────── */
+  #trail-panel { min-width: 0; }
+  #trail-scroll {
+    flex: 1; overflow-y: auto; padding: 8px 12px;
+    display: flex; flex-direction: column-reverse; gap: 6px;
+  }
+  #trail-scroll::-webkit-scrollbar { width: 4px; }
+  #trail-scroll::-webkit-scrollbar-track { background: transparent; }
+  #trail-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+  .trail-entry {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px;
+    font-family: var(--mono); font-size: 0.68rem; line-height: 1.5;
+    animation: fade-in .25s ease;
+  }
+  .trail-entry.blocked { border-left: 3px solid var(--red); }
+  .trail-entry.hedge    { border-left: 3px solid var(--amber); }
+  .trail-entry.escalate { border-left: 3px solid #a78bfa; }
+  .trail-entry.nav      { border-left: 3px solid var(--green); }
+  .trail-time { color: var(--text-3); font-size: 0.62rem; }
+  .trail-tier { font-weight: 600; }
+  .trail-tier.blocked  { color: #fca5a5; }
+  .trail-tier.hedge    { color: #fde68a; }
+  .trail-tier.escalate { color: #c4b5fd; }
+  .trail-tier.nav      { color: #86efac; }
+  .trail-text { color: var(--text-2); margin-top: 2px; }
+
+  @keyframes fade-in {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ── Bottom Bar ─────────────────────────────────────────────────── */
+  footer {
+    background: var(--bg-panel);
+    border-top: 1px solid var(--border);
+    display: flex; align-items: center;
+    padding: 0 24px; gap: 16px;
+  }
+  .footer-label { font-size: 0.72rem; color: var(--text-2); font-weight: 500; white-space: nowrap; }
+  select, .btn {
+    padding: 7px 14px; border-radius: 8px; font-size: 0.78rem; font-weight: 500;
+    border: 1px solid var(--border); cursor: pointer;
+    font-family: 'Inter', sans-serif; transition: all .2s;
+  }
+  select { background: var(--bg-card); color: var(--text-1); flex: 1; max-width: 180px; }
+  .btn { background: var(--bg-card); color: var(--text-1); }
+  .btn:hover { background: var(--border); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { background: #4f46e5; }
+  .btn.danger { background: rgba(239,68,68,.15); color: #fca5a5; border-color: rgba(239,68,68,.3); }
+  .btn.danger:hover { background: rgba(239,68,68,.25); }
+
+  .mode-toggle { display: flex; gap: 4px; }
+  .mode-btn {
+    padding: 6px 12px; border-radius: 7px; font-size: 0.72rem; font-weight: 600;
+    border: 1px solid var(--border); cursor: pointer; background: var(--bg-card);
+    color: var(--text-2); transition: all .2s; letter-spacing: .3px;
+  }
+  .mode-btn.active {
+    background: var(--accent); color: #fff; border-color: var(--accent);
+    box-shadow: 0 0 12px var(--accent-glow);
+  }
+
+  /* ── Escalation Modal ───────────────────────────────────────────── */
+  #escalation-modal {
+    display: none; position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,.75); backdrop-filter: blur(6px);
+    align-items: center; justify-content: center;
+  }
+  #escalation-modal.show { display: flex; }
+  .modal-card {
+    background: var(--bg-panel); border: 1px solid rgba(239,68,68,.5);
+    border-radius: 16px; padding: 32px; max-width: 440px; width: 90%;
+    box-shadow: 0 0 60px rgba(239,68,68,.2);
+    animation: modal-in .3s cubic-bezier(.34,1.56,.64,1);
+  }
+  @keyframes modal-in {
+    from { opacity: 0; transform: scale(.9); }
+    to   { opacity: 1; transform: scale(1); }
+  }
+  .modal-icon { font-size: 3rem; margin-bottom: 16px; text-align: center; }
+  .modal-title {
+    font-size: 1.3rem; font-weight: 700; color: #fca5a5;
+    margin-bottom: 8px; text-align: center;
+  }
+  .modal-body { color: var(--text-2); font-size: 0.88rem; line-height: 1.6; text-align: center; margin-bottom: 20px; }
+  .modal-detail {
+    background: var(--bg-card); border-radius: 8px; padding: 12px;
+    font-family: var(--mono); font-size: 0.75rem; color: var(--text-2);
+    margin-bottom: 20px; border: 1px solid var(--border);
+  }
+  .modal-actions { display: flex; gap: 12px; justify-content: center; }
+
+  /* ── Post-Walk Report ───────────────────────────────────────────── */
+  #report-modal {
+    display: none; position: fixed; inset: 0; z-index: 1000;
+    background: rgba(0,0,0,.8); backdrop-filter: blur(6px);
+    align-items: center; justify-content: center;
+  }
+  #report-modal.show { display: flex; }
+  .report-card {
+    background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px; max-width: 560px; width: 90%;
+    max-height: 80vh; overflow-y: auto;
+    animation: modal-in .3s ease;
+  }
+  .report-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 18px; }
+  .report-stat-row {
+    display: flex; gap: 12px; margin-bottom: 16px; flex-wrap: wrap;
+  }
+  .report-stat {
+    flex: 1; min-width: 100px; background: var(--bg-card);
+    border: 1px solid var(--border); border-radius: 10px;
+    padding: 12px; text-align: center;
+  }
+  .report-stat-val { font-size: 1.6rem; font-weight: 700; color: var(--accent); }
+  .report-stat-lbl { font-size: 0.68rem; color: var(--text-2); margin-top: 2px; }
+  .report-table {
+    width: 100%; border-collapse: collapse; font-size: 0.75rem;
+    font-family: var(--mono); margin-bottom: 16px;
+  }
+  .report-table th {
+    text-align: left; padding: 6px 8px; color: var(--text-2);
+    border-bottom: 1px solid var(--border); font-weight: 600;
+  }
+  .report-table td { padding: 6px 8px; border-bottom: 1px solid rgba(30,42,66,.5); }
+  .report-table tr:last-child td { border-bottom: none; }
+</style>
+</head>
+<body>
+
+<!-- ── Header ──────────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">
+    <div class="logo-icon">♿</div>
+    CampusEcho
+    <span style="color:var(--text-3);font-weight:400;font-size:.85rem">Mission Control</span>
+  </div>
+  <div class="status-pills">
+    <span id="ws-pill" class="pill disconnected">WS: Connecting…</span>
+    <span id="mode-pill" class="pill mode">Mode: DUAL</span>
+    <span id="fps-display" class="header-fps">-- FPS</span>
+  </div>
+</header>
+
+<!-- ── Main Grid ────────────────────────────────────────────────────── -->
+<main>
+  <!-- Left: Video Feed -->
+  <div class="panel" id="video-panel">
+    <div class="panel-title"><span class="panel-title-dot"></span>Live Camera Feed</div>
+    <div style="flex:1;position:relative;background:#000;overflow:hidden;">
+      <img id="camera-feed" src="/video_feed" alt="Live camera feed"
+           onerror="this.style.display='none'; document.getElementById('video-placeholder').style.display='flex'">
+      <div id="video-placeholder" style="display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;gap:12px;color:var(--text-3);">
+        <div style="font-size:3rem;">📷</div>
+        <div style="font-size:.85rem;">Camera feed unavailable<br><span style="font-size:.75rem;">Start server with webcam or --video flag</span></div>
+      </div>
+      <div class="video-overlay">
+        <div>
+          <div class="video-stat" id="obstacle-stat">No obstacles detected</div>
+          <div class="video-stat" id="distance-stat" style="color:var(--text-3);font-size:.65rem;"></div>
+        </div>
+        <span id="path-badge" class="obstacle-badge clear">PATH CLEAR</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Centre: Campus Map + Haptic Simulator -->
+  <div class="panel" id="map-panel">
+    <div class="panel-title"><span class="panel-title-dot" style="background:var(--green)"></span>Campus Map</div>
+    <div id="campus-svg-wrap">
+      <svg id="campus-svg" viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+        <!-- Edges -->
+        <g id="svg-edges">
+          <line id="edge_golden_gate_to_turn"          class="svg-edge" x1="150" y1="30"  x2="150" y2="90"/>
+          <line id="edge_turn_to_atc"                  class="svg-edge" x1="150" y1="90"  x2="80"  y2="140"/>
+          <line id="edge_atc_to_junction"              class="svg-edge" x1="80"  y1="140" x2="80"  y2="190"/>
+          <line id="edge_junction_to_silveria"         class="svg-edge" x1="80"  y1="190" x2="220" y2="310"/>
+          <line id="edge_junction_to_plus_point"       class="svg-edge" x1="80"  y1="190" x2="80"  y2="270"/>
+          <line id="edge_plus_point_to_admin_turn"     class="svg-edge" x1="80"  y1="270" x2="160" y2="330"/>
+          <line id="edge_admin_turn_to_admin"          class="svg-edge" x1="160" y1="330" x2="220" y2="395"/>
+          <line id="edge_plus_point_to_silveria_alternate" class="svg-edge" x1="80" y1="270" x2="220" y2="310"/>
+        </g>
+        <!-- Hazard pins layer -->
+        <g id="svg-hazards"></g>
+        <!-- Nodes -->
+        <g id="svg-nodes">
+          <g class="svg-node" data-node="golden_gate">
+            <circle cx="150" cy="30"  r="10" fill="#6366f1" stroke="#a5b4fc"/>
+            <text x="163" y="34" fill="#94a3b8">Golden Gate</text>
+          </g>
+          <g class="svg-node" data-node="golden_gate_turn">
+            <circle cx="150" cy="90"  r="7" fill="#334155" stroke="#475569"/>
+            <text x="158" y="93" fill="#64748b">Turn</text>
+          </g>
+          <g class="svg-node" data-node="atc_building">
+            <circle cx="80"  cy="140" r="10" fill="#6366f1" stroke="#a5b4fc"/>
+            <text x="93"  y="144" fill="#94a3b8">ATC Building</text>
+          </g>
+          <g class="svg-node" data-node="atc_junction">
+            <circle cx="80"  cy="190" r="7" fill="#334155" stroke="#475569"/>
+            <text x="88" y="194" fill="#64748b">Junction</text>
+          </g>
+          <g class="svg-node" data-node="plus_point">
+            <circle cx="80"  cy="270" r="10" fill="#6366f1" stroke="#a5b4fc"/>
+            <text x="93"  y="274" fill="#94a3b8">Plus Point</text>
+          </g>
+          <g class="svg-node" data-node="silveria_hall">
+            <circle cx="220" cy="310" r="12" fill="#22c55e" stroke="#86efac"/>
+            <text x="160" y="328" fill="#86efac" font-weight="600">Silveria Hall</text>
+          </g>
+          <g class="svg-node" data-node="admin_path_turn">
+            <circle cx="160" cy="330" r="7" fill="#334155" stroke="#475569"/>
+          </g>
+          <g class="svg-node" data-node="admin_building">
+            <circle cx="220" cy="395" r="10" fill="#6366f1" stroke="#a5b4fc"/>
+            <text x="150" y="408" fill="#94a3b8">Admin Building</text>
+          </g>
+        </g>
+        <!-- User position indicator -->
+        <circle id="user-pos" cx="150" cy="30" r="5" fill="#f59e0b"
+                style="filter:drop-shadow(0 0 6px #f59e0b)">
+          <animate attributeName="r" values="5;8;5" dur="1.5s" repeatCount="indefinite"/>
+        </circle>
+      </svg>
+    </div>
+    <!-- Haptic Simulator -->
+    <div id="haptic-sim">
+      <div class="haptic-motor">
+        <div class="motor-ring" id="motor-left">◀</div>
+        <span>LEFT</span>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;gap:4px;justify-content:center;">
+        <div style="font-size:.65rem;color:var(--text-3);text-transform:uppercase;letter-spacing:.5px;">Haptic</div>
+        <div id="haptic-cmd-display" style="font-family:var(--mono);font-size:.8rem;color:var(--text-2);">--</div>
+        <div style="font-size:.62rem;color:var(--text-3)" id="haptic-desc">waiting</div>
+      </div>
+      <div class="haptic-motor">
+        <div class="motor-ring" id="motor-right">▶</div>
+        <span>RIGHT</span>
+      </div>
+    </div>
+    <!-- Active route info -->
+    <div style="padding:10px 16px;border-top:1px solid var(--border);font-size:.72rem;color:var(--text-2);">
+      <span id="route-info">No active route. Select a destination below.</span>
+    </div>
+  </div>
+
+  <!-- Right: Reasoning Trail -->
+  <div class="panel" id="trail-panel">
+    <div class="panel-title">
+      <span class="panel-title-dot" style="background:var(--amber)"></span>
+      Reasoning Trail
+      <span id="trail-count" style="margin-left:auto;color:var(--text-3);font-family:var(--mono);">0</span>
+    </div>
+    <div id="trail-scroll"></div>
+    <!-- Active hazards summary -->
+    <div style="padding:10px 12px;border-top:1px solid var(--border);flex-shrink:0;">
+      <div style="font-size:.68rem;color:var(--text-3);margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px;">Active Hazards</div>
+      <div id="hazard-list" style="display:flex;flex-direction:column;gap:4px;max-height:90px;overflow-y:auto;"></div>
+    </div>
+  </div>
+</main>
+
+<!-- ── Footer / Control Bar ─────────────────────────────────────────── -->
+<footer>
+  <span class="footer-label">Destination:</span>
+  <select id="dest-select">
+    <option value="silveria_hall">Silveria Hall</option>
+    <option value="admin_building">Admin Building</option>
+    <option value="plus_point">Plus Point</option>
+    <option value="atc_building">ATC Building</option>
+  </select>
+  <button class="btn primary" id="btn-start">▶ Start Walk</button>
+  <button class="btn danger" id="btn-end" disabled>■ End Walk</button>
+  <div style="flex:1"></div>
+  <span class="footer-label">Output Mode:</span>
+  <div class="mode-toggle">
+    <button class="mode-btn active" id="mode-dual"   onclick="setMode('DUAL')">Dual</button>
+    <button class="mode-btn"        id="mode-voice"  onclick="setMode('VOICE_ONLY')">Voice</button>
+    <button class="mode-btn"        id="mode-haptic" onclick="setMode('HAPTIC_ONLY')">Haptic</button>
+  </div>
+</footer>
+
+<!-- ── Escalation Alert Modal ────────────────────────────────────────── -->
+<div id="escalation-modal">
+  <div class="modal-card">
+    <div class="modal-icon">🆘</div>
+    <div class="modal-title">ESCALATION ALERT</div>
+    <div class="modal-body" id="modal-body-text">Uncertain obstacle detected. User has been instructed to stop.</div>
+    <div class="modal-detail" id="modal-detail"></div>
+    <div class="modal-actions">
+      <button class="btn danger" onclick="dispatchHelp()">Dispatch Help</button>
+      <button class="btn" onclick="dismissEscalation()">Dismiss</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Post-Walk Report Modal ─────────────────────────────────────────── -->
+<div id="report-modal">
+  <div class="report-card">
+    <div class="report-title">📋 Post-Walk Decision Report</div>
+    <div class="report-stat-row" id="report-stats"></div>
+    <div id="report-table-wrap"></div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;">
+      <button class="btn" onclick="exportReport()">Export JSON</button>
+      <button class="btn primary" onclick="closeReport()">Close</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────
+const API = `http://${location.hostname}:8000`;
+const WS_URL = `ws://${location.hostname}:8000/ws/telemetry`;
+let ws = null, wsReconnectTimer = null;
+let currentMode = 'DUAL';
+let activeHazards = {};
+let walkActive = false;
+let sessionLog = [];
+let walkStartTime = null;
+let trailCount = 0;
+
+const PATTERN_NAMES = {
+  '1':'single','2':'double-tap','3':'rapid burst','4':'long hold','5':'SOS'
+};
+const SIDE_NAMES = { 'L':'left','R':'right','B':'both' };
+
+// ── WebSocket ────────────────────────────────────────────────────────
+function connectWS() {
+  ws = new WebSocket(WS_URL);
+  ws.onopen = () => {
+    document.getElementById('ws-pill').textContent = 'WS: Connected';
+    document.getElementById('ws-pill').className = 'pill connected';
+    clearTimeout(wsReconnectTimer);
+  };
+  ws.onmessage = (e) => handleMessage(JSON.parse(e.data));
+  ws.onclose = () => {
+    document.getElementById('ws-pill').textContent = 'WS: Disconnected';
+    document.getElementById('ws-pill').className = 'pill disconnected';
+    wsReconnectTimer = setTimeout(connectWS, 3000);
+  };
+  ws.onerror = () => ws.close();
+}
+
+function sendWS(obj) {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+function handleMessage(msg) {
+  switch (msg.event) {
+    case 'snapshot':
+    case 'decay_tick':
+      (msg.hazards || msg.active_hazards || []).forEach(h => activeHazards[h.obstacle_id] = h);
+      (msg.pruned_ids || []).forEach(id => delete activeHazards[id]);
+      renderHazards(); renderHazardList(); break;
+
+    case 'obstacle_reported':
+      if (msg.obstacle) { activeHazards[msg.obstacle.obstacle_id] = msg.obstacle; }
+      renderHazards(); renderHazardList();
+      addTrailEntry('blocked', msg.obstacle?.label || 'obstacle',
+        `BLOCKED on ${msg.obstacle?.edge_id || '?'} | weight=${msg.obstacle?.active_weight}`);
+      markEdgeBlocked(msg.obstacle?.edge_id); break;
+
+    case 'obstacle_cleared':
+      delete activeHazards[msg.obstacle_id];
+      renderHazards(); renderHazardList(); break;
+
+    case 'voice_speak':
+      if (currentMode !== 'HAPTIC_ONLY') speak(msg.text, msg.priority); break;
+
+    case 'haptic_cmd':
+      if (currentMode !== 'VOICE_ONLY') fireHaptic(msg.cmd); break;
+
+    case 'nav_event':
+      addTrailEntry('nav', msg.event_type, msg.voice_instruction);
+      if (currentMode !== 'HAPTIC_ONLY') speak(msg.voice_instruction);
+      document.getElementById('route-info').textContent =
+        `${msg.node_label || ''} — ${msg.remaining_distance_m?.toFixed(0) || '?'}m remaining`; break;
+
+    case 'frame_result':
+      updateFrameStats(msg); break;
+
+    case 'escalation':
+      showEscalation(msg); break;
+
+    case 'mode_change':
+      currentMode = msg.mode; updateModePills(); break;
+
+    case 'walk_start':
+      walkActive = true; walkStartTime = Date.now();
+      document.getElementById('btn-start').disabled = true;
+      document.getElementById('btn-end').disabled = false; break;
+
+    case 'walk_end':
+      walkActive = false; break;
+  }
+}
+
+// ── Speech Synthesis ──────────────────────────────────────────────────
+const synth = window.speechSynthesis;
+function speak(text, priority = 'normal') {
+  if (!text) return;
+  if (priority === 'urgent') synth.cancel();
+  const utt = new SpeechSynthesisUtterance(text);
+  utt.rate = 1.05; utt.pitch = 1.0; utt.volume = 1.0;
+  synth.speak(utt);
+}
+
+// ── Haptic Simulator ─────────────────────────────────────────────────
+function fireHaptic(cmd) {
+  if (!cmd || cmd.length < 4) return;
+  const side = cmd[0].toUpperCase();
+  const intensity = parseInt(cmd[1]) || 5;
+  const pattern = cmd[3];
+  const patName = PATTERN_NAMES[pattern] || 'pulse';
+  const sideName = SIDE_NAMES[side] || 'both';
+
+  document.getElementById('haptic-cmd-display').textContent = cmd;
+  document.getElementById('haptic-desc').textContent = `${sideName}, ${patName}, strength ${intensity}`;
+
+  const reps = pattern === '5' ? 3 : pattern === '3' ? 2 : 1;
+  let i = 0;
+  function pulse() {
+    if (side === 'L' || side === 'B') pulseMotor('motor-left');
+    if (side === 'R' || side === 'B') pulseMotor('motor-right');
+    playHapticTone(side, intensity);
+    i++;
+    if (i < reps) setTimeout(pulse, 220);
+  }
+  pulse();
+}
+
+function pulseMotor(id) {
+  const el = document.getElementById(id);
+  el.classList.remove('pulsing');
+  void el.offsetWidth; // reflow
+  el.classList.add('pulsing');
+  setTimeout(() => el.classList.remove('pulsing'), 500);
+}
+
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playHapticTone(side, intensity) {
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  const pan = audioCtx.createStereoPanner();
+  pan.pan.value = side === 'L' ? -0.8 : side === 'R' ? 0.8 : 0;
+  osc.frequency.value = 180 + intensity * 20;
+  gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+  gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + 0.18);
+  osc.connect(gain); gain.connect(pan); pan.connect(audioCtx.destination);
+  osc.start(); osc.stop(audioCtx.currentTime + 0.18);
+}
+
+// ── Campus Map ───────────────────────────────────────────────────────
+const NODE_POS = {
+  golden_gate:      [150, 30],  golden_gate_turn: [150, 90],
+  atc_building:     [80, 140],  atc_junction:     [80, 190],
+  plus_point:       [80, 270],  silveria_hall:    [220, 310],
+  admin_path_turn:  [160, 330], admin_building:   [220, 395],
+};
+
+function renderHazards() {
+  const layer = document.getElementById('svg-hazards');
+  layer.innerHTML = '';
+  Object.values(activeHazards).forEach(h => {
+    const edgeEl = document.getElementById(h.edge_id);
+    if (!edgeEl) return;
+    // Weight fraction 0→1
+    const frac = Math.min(1, h.active_weight / (h.initial_weight || 300));
+    const col = frac > 0.6 ? '#ef4444' : frac > 0.25 ? '#f59e0b' : '#64748b';
+    const x1 = parseFloat(edgeEl.getAttribute('x1'));
+    const y1 = parseFloat(edgeEl.getAttribute('y1'));
+    const x2 = parseFloat(edgeEl.getAttribute('x2'));
+    const y2 = parseFloat(edgeEl.getAttribute('y2'));
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
+    const pin = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    pin.classList.add('hazard-pin');
+    pin.innerHTML = `
+      <circle cx="${mx}" cy="${my}" r="${5 + frac * 4}" fill="${col}" opacity="0.85"
+              style="filter:drop-shadow(0 0 5px ${col})"/>
+      <text x="${mx + 7}" y="${my + 3}" fill="${col}" font-size="7"
+            font-family="Inter,sans-serif">${h.label}</text>`;
+    layer.appendChild(pin);
+  });
+}
+
+function markEdgeBlocked(edgeId) {
+  if (!edgeId) return;
+  const el = document.getElementById(edgeId);
+  if (el) { el.classList.add('blocked'); setTimeout(() => el.classList.remove('blocked'), 8000); }
+}
+
+// ── Reasoning Trail ───────────────────────────────────────────────────
+function addTrailEntry(type, label, detail) {
+  trailCount++;
+  document.getElementById('trail-count').textContent = trailCount;
+  const now = new Date().toLocaleTimeString('en-IN', { hour12: false });
+  const div = document.createElement('div');
+  div.className = `trail-entry ${type}`;
+  div.innerHTML = `
+    <div class="trail-time">${now}</div>
+    <div class="trail-tier ${type}">${label.toUpperCase()}</div>
+    <div class="trail-text">${detail}</div>`;
+  const scroll = document.getElementById('trail-scroll');
+  scroll.prepend(div);
+  sessionLog.push({ time: now, type, label, detail });
+}
+
+// ── Hazard List ───────────────────────────────────────────────────────
+function renderHazardList() {
+  const el = document.getElementById('hazard-list');
+  const hazards = Object.values(activeHazards);
+  if (!hazards.length) {
+    el.innerHTML = '<div style="font-size:.68rem;color:var(--text-3);">No active hazards</div>'; return;
+  }
+  el.innerHTML = hazards.map(h => {
+    const frac = Math.min(1, h.active_weight / (h.initial_weight || 300));
+    const col = frac > 0.6 ? '#ef4444' : frac > 0.25 ? '#f59e0b' : '#64748b';
+    const pct = Math.round(frac * 100);
+    return `<div style="display:flex;align-items:center;gap:8px;font-size:.68rem;">
+      <div style="width:8px;height:8px;border-radius:50%;background:${col};flex-shrink:0;"></div>
+      <span style="color:var(--text-1);flex:1">${h.label}</span>
+      <span style="font-family:var(--mono);color:${col}">${pct}%</span>
+    </div>`;
+  }).join('');
+}
+
+// ── Frame Stats ────────────────────────────────────────────────────────
+function updateFrameStats(msg) {
+  document.getElementById('fps-display').textContent = `${msg.fps || '--'} FPS`;
+  const pathClear = msg.path_clear !== false;
+  const badge = document.getElementById('path-badge');
+  badge.textContent = pathClear ? 'PATH CLEAR' : `${msg.obstacle_count} OBSTACLE${msg.obstacle_count > 1 ? 'S' : ''}`;
+  badge.className = `obstacle-badge ${pathClear ? 'clear' : ''}`;
+  if (!pathClear && msg.obstacles?.length) {
+    const top = msg.obstacles[0];
+    document.getElementById('obstacle-stat').textContent =
+      `${top.label} | ${top.distance_m?.toFixed(1)}m | conf ${(top.confidence * 100).toFixed(0)}%`;
+    document.getElementById('distance-stat').textContent =
+      `Position: ${top.horizontal_position} | In lane: ${top.in_walking_lane}`;
+  } else {
+    document.getElementById('obstacle-stat').textContent = 'No obstacles detected';
+    document.getElementById('distance-stat').textContent = '';
+  }
+}
+
+// ── Escalation Modal ───────────────────────────────────────────────────
+function showEscalation(msg) {
+  document.getElementById('modal-body-text').textContent = msg.spoken_instruction || 'Uncertain obstacle detected.';
+  document.getElementById('modal-detail').textContent =
+    `Label: ${msg.obstacle_label || '?'} | Conf: ${((msg.confidence || 0) * 100).toFixed(0)}% | Dist: ${msg.distance_m?.toFixed(1) || '?'}m`;
+  document.getElementById('escalation-modal').classList.add('show');
+  addTrailEntry('escalate', 'ESCALATE', msg.spoken_instruction || '');
+  if (currentMode !== 'HAPTIC_ONLY') speak(msg.spoken_instruction || 'Requesting assistance', 'urgent');
+  if (currentMode !== 'VOICE_ONLY') fireHaptic('B9P5');
+}
+function dismissEscalation() {
+  document.getElementById('escalation-modal').classList.remove('show');
+}
+function dispatchHelp() {
+  addTrailEntry('escalate', 'HELP DISPATCHED', 'Caregiver notified via escalation modal.');
+  dismissEscalation();
+}
+
+// ── Mode Toggle ────────────────────────────────────────────────────────
+function setMode(mode) {
+  currentMode = mode;
+  fetch(`${API}/mode`, {
+    method: 'POST', headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ mode })
+  }).catch(() => {});
+  updateModePills();
+  document.getElementById('mode-pill').textContent = `Mode: ${mode.replace('_', ' ')}`;
+  addTrailEntry('nav', 'MODE CHANGE', mode.replace('_', ' '));
+}
+
+function updateModePills() {
+  ['dual','voice','haptic'].forEach(m => {
+    document.getElementById(`mode-${m}`).classList.remove('active');
+  });
+  const modeKey = currentMode === 'DUAL' ? 'dual' : currentMode === 'VOICE_ONLY' ? 'voice' : 'haptic';
+  document.getElementById(`mode-${modeKey}`).classList.add('active');
+}
+
+// ── Walk Controls ─────────────────────────────────────────────────────
+document.getElementById('btn-start').onclick = () => {
+  const dest = document.getElementById('dest-select').value;
+  walkStartTime = Date.now(); walkActive = true; sessionLog = []; trailCount = 0;
+  document.getElementById('trail-scroll').innerHTML = '';
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-end').disabled = false;
+  speak(`Route planned to ${dest.replace(/_/g,' ')}. Starting navigation.`);
+  addTrailEntry('nav', 'WALK START', `Destination: ${dest.replace(/_/g,' ')}`);
+  fireHaptic('B4P1');
+  sendWS({ cmd: 'start_walk', destination: dest });
+};
+
+document.getElementById('btn-end').onclick = () => {
+  walkActive = false;
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-end').disabled = true;
+  speak('Walk ended. Generating report.');
+  showReport();
+};
+
+// ── Post-Walk Report ──────────────────────────────────────────────────
+function showReport() {
+  const duration = walkStartTime ? Math.round((Date.now() - walkStartTime) / 1000) : 0;
+  const blocked = sessionLog.filter(e => e.type === 'blocked').length;
+  const escalations = sessionLog.filter(e => e.type === 'escalate').length;
+  const navEvents = sessionLog.filter(e => e.type === 'nav').length;
+
+  document.getElementById('report-stats').innerHTML = `
+    <div class="report-stat"><div class="report-stat-val">${duration}s</div><div class="report-stat-lbl">Duration</div></div>
+    <div class="report-stat"><div class="report-stat-val">${blocked}</div><div class="report-stat-lbl">Obstacles</div></div>
+    <div class="report-stat"><div class="report-stat-val">${escalations}</div><div class="report-stat-lbl">Escalations</div></div>
+    <div class="report-stat"><div class="report-stat-val">${navEvents}</div><div class="report-stat-lbl">Nav Events</div></div>`;
+
+  const rows = sessionLog.map(e =>
+    `<tr><td>${e.time}</td><td class="trail-tier ${e.type}">${e.type.toUpperCase()}</td>
+     <td>${e.label}</td><td>${e.detail}</td></tr>`).join('');
+
+  document.getElementById('report-table-wrap').innerHTML = `
+    <table class="report-table">
+      <thead><tr><th>Time</th><th>Type</th><th>Event</th><th>Detail</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+
+  document.getElementById('report-modal').classList.add('show');
+}
+
+function closeReport() { document.getElementById('report-modal').classList.remove('show'); }
+function exportReport() {
+  const blob = new Blob([JSON.stringify(sessionLog, null, 2)], {type:'application/json'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+  a.download = `campusecho_report_${Date.now()}.json`; a.click();
+}
+
+// ── Init ──────────────────────────────────────────────────────────────
+connectWS();
+renderHazardList();
+// Resume audioCtx on first user gesture (browser autoplay policy)
+document.body.addEventListener('click', () => { if (audioCtx.state === 'suspended') audioCtx.resume(); }, { once: true });
+</script>
+</body>
+</html>

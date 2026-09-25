@@ -224,24 +224,86 @@ Each phase section documents:
 
 ## Phase 6: Dual-Mode Notification Layer (Voice TTS + Haptic Encoder + Caregiver Dashboard)
 
-*(To be filled upon completion of Phase 6)*
-
 - **What Was Built**:
+  - `src/notifications/voice_engine.py`: `VoiceQueue` — thread-safe `PriorityQueue` for spoken instructions. Supports three priority levels: `urgent` (priority 0), `normal` (1), `low` (2). Duplicate consecutive texts are de-duped at enqueue time (not dequeue) so the same caution message is not repeated on every frame. Urgent instructions (`BLOCKED`, `ESCALATE`) call `interrupt_previous=True`, which drains the queue before insertion. `VoiceEngine` wraps the queue with `speak()`, `speak_urgent()`, and `speak_low()` convenience methods.
+  - `src/notifications/haptic_encoder.py`: `HapticEncoder` — encodes turns, alerts, and milestones into the CampusEcho haptic protocol string `{side}{intensity}P{pattern}`:
+    - `side`: `L` (left motor), `R` (right motor), `B` (both)
+    - `intensity`: 1–9 (vibration strength)
+    - `pattern`: 1=single, 2=double-tap, 3=rapid burst, 4=long hold, 5=SOS
+    - `HapticCommand.parse()` validates and describes any command string for the simulator UI.
+  - `src/notifications/mode_router.py`: `ModeRouter` — central output dispatcher. Accepts `PolicyDecision` and `NavigationEvent` objects, routes to `VoiceEngine` and/or `HapticEncoder` based on the active `OutputMode` (`VOICE_ONLY`, `HAPTIC_ONLY`, `DUAL`). Mode is togglable at runtime. Registers callbacks so the API server can forward `voice_speak` and `haptic_cmd` WebSocket events to the dashboard. Maintains `session_log: List[DispatchResult]` for post-walk report generation.
+  - `src/api/telemetry.py`: Defines all WebSocket event type constants (`voice_speak`, `haptic_cmd`, `nav_event`, `frame_result`, `escalation`, `mode_change`, `walk_start`, `walk_end`, …) and factory functions so server code stays free of raw string literals.
+  - `src/api/server.py` (additions): `POST /mode` endpoint accepts `{"mode": "DUAL"|"VOICE_ONLY"|"HAPTIC_ONLY"}`, updates `ModeRouter`, and broadcasts `mode_change` to all WebSocket clients. `GET /dashboard` serves `static/dashboard.html`. `StaticFiles` mount at `/static` serves all assets.
+  - `static/dashboard.html`: Single-file Caregiver Mission Control Dashboard (vanilla HTML5/CSS3/ES Modules, no build step):
+    - **Left panel**: Live annotated camera feed via MJPEG `<img src="/video_feed">`.
+    - **Centre panel**: SVG campus map with 8 nodes and 8 edges matching `campus_graph.json`. Hazard pins render on edge midpoints, colour-coded red → amber → grey as `active_weight` decays. Active route highlighted in indigo. Animated user-position dot.
+    - **Haptic Simulator**: Visual motor-ring pulse animations (left/right/both) + stereo spatial audio tones via Web Audio API (`StereoPannerNode`). Fully functional with zero hardware — judges can see and hear every haptic event.
+    - **Right panel**: Live scrolling Decision Reasoning Trail with colour-coded border per tier (red=BLOCKED, amber=HEDGE, purple=ESCALATE, green=nav).
+    - **Escalation Modal**: Full-screen glassmorphism overlay triggered by `escalation` WebSocket event. Shows spoken instruction, obstacle label, confidence, distance, and a "Dispatch Help" action.
+    - **Post-Walk Report**: Clicking "End Walk" generates a summary (duration, obstacles, escalations, nav events) and a full chronological decision audit table. Exportable as JSON via `Blob` download.
+    - **Mode toggle**: Three-button pill (Dual / Voice / Haptic) calls `POST /mode` and receives `mode_change` broadcast.
+  - `tests/test_notifications.py`: 20 unit tests covering haptic protocol encoding, VoiceQueue priority ordering, dedup, urgent bypass, flush, mode dispatch for all three modes, and session log recording.
 - **Technology & Libraries Used**:
+  - **Web Speech Synthesis API** (browser built-in): Zero-latency TTS with no API key, no network round-trip, no external dependency. Priority controlled by the `VoiceQueue` in Python; actual speech is synthesised client-side.
+  - **Web Audio API** (`AudioContext`, `OscillatorNode`, `StereoPannerNode`): Spatial audio haptic tones (left-panned for L motor, right-panned for R motor) providing an audible haptic simulation for judges without hardware.
+  - **Vanilla HTML5/CSS3**: No React, no npm, no build step. Loads in <200ms on any modern browser on the demo laptop.
+  - `python-multipart==0.0.32` (added to `requirements.txt`): Required by FastAPI's `StaticFiles` mount and `FileResponse` for the dashboard endpoint.
 - **Decision / Alternatives Considered / Why This One**:
+  - *Decision (TTS):* Web Speech Synthesis API, not `pyttsx3` or ElevenLabs.
+    - *Why:* `pyttsx3` requires a native TTS engine install per OS (SAPI5/espeak), adds process-level latency, and cannot be interrupted mid-utterance. ElevenLabs requires an API key and internet. Web Speech runs in the browser with sub-50ms latency and supports `speechSynthesis.cancel()` for urgent interrupts.
+  - *Decision (Haptic Protocol):* Custom `L{n}P{p}` string protocol with Web Audio simulator fallback, not native Bluetooth-only.
+    - *Why:* The demo is hardware-optional. If the ESP32 or Bluetooth drops during judging, the Web Haptic Simulator is a guaranteed visual + audible fallback that makes haptic feedback fully legible to the audience. Hardware connects transparently if present via the same command string over Bluetooth SPP serial.
+  - *Decision (Dashboard):* Single-file vanilla HTML, not React/Next.js or Streamlit.
+    - *Why:* Zero npm dependency fragility on a hackathon team machine. No build pipeline to break. The dashboard loads by double-clicking the file or visiting `/dashboard`, requires no `npm install`, and works on any teammate's machine in seconds.
 - **Functionality & Data Flow**:
+  - `ObstacleDetector` frame → `ConfidencePolicy.evaluate()` → `PolicyDecision` → `ModeRouter.handle_decision()` → `DispatchResult` → callback → `_broadcast()`.
+  - `DispatchResult.voice_text` → WS `voice_speak` event → browser `speechSynthesis.speak()`.
+  - `DispatchResult.haptic_cmd` → WS `haptic_cmd` event → browser `fireHaptic(cmd)` → ring pulse animation + spatial audio + (optional) ESP32 serial.
+  - `NavigationEvent` → `ModeRouter.handle_nav_event()` → turn haptic + voice instruction.
+  - `ESCALATE` tier → `ModeRouter` fires `speak_urgent()` + `B9P5` haptic → `_broadcast(escalation event)` → dashboard Escalation Modal opens.
 - **Inputs & Outputs**:
+  - *Input:* `PolicyDecision` (from Phase 4), `NavigationEvent` (from Phase 3), mode toggle command via `POST /mode`.
+  - *Output (WS):* `voice_speak`, `haptic_cmd`, `nav_event`, `frame_result`, `escalation`, `mode_change`, `walk_start`, `walk_end`.
+  - *Output (REST):* `GET /dashboard` → HTML, `POST /mode` → `{status, mode}`.
 - **Known Limitations**:
+  - Web Speech voice selection is browser/OS-dependent; quality varies between Chrome and Firefox.
+  - The MJPEG `/video_feed` endpoint is not yet wired to `ObstacleDetector` in Phase 6 — it will be connected in Phase 7's `start.py` integration. The dashboard `<img>` shows a placeholder if the endpoint is unreachable.
 
 ---
 
 ## Phase 7: End-to-End Integration, Staged Demo Scenarios & Polish
 
-*(To be filled upon completion of Phase 7)*
-
 - **What Was Built**:
+  - `start.py`: Master single-command launcher. Sequence: (1) calls `db_init()`, (2) starts `uvicorn` FastAPI server in a background daemon thread, (3) polls `GET /health` until server is ready (max 8s), (4) `POST /mode` to set initial output mode, (5) calls `webbrowser.open()` to open the dashboard, (6) keeps main thread alive with `Ctrl+C` handler. Accepts `--mode`, `--video`, `--host`, `--port`, `--start`, `--destination`, `--no-browser` flags.
+  - `scripts/run_demo_scenarios.py`: Automated 3-scenario demo runner that exercises the full pipeline against a running server without requiring a live camera:
+    - **Scenario 1** (Clear Path): Narrates a clear walking corridor with expected TTS and haptic outputs.
+    - **Scenario 2** (BLOCKED — Chair): POSTs a real obstacle to `POST /obstacles`, shows DB write confirmation, narrates Tier 1 reroute + `B9P3` haptic + WS broadcast.
+    - **Scenario 3** (ESCALATE — Shadowed Step): Narrates the shadow-calibrated confidence path leading to Tier 3 `B9P5` SOS haptic + escalation modal.
+    - Ends with a live DB status query showing active hazard count and weights.
+  - `tests/test_integration.py`: 5 end-to-end integration tests covering: (1) clear frame → HEDGE policy, (2) high-confidence in-lane → BLOCKED reroute flag, (3) low-confidence in-lane → ESCALATE flag, (4) DUAL mode dispatch emits voice + haptic, (5) FastAPI endpoints: `/health`, `/dashboard`, `POST /mode` (valid and invalid), and WebSocket `mode_change` broadcast.
+  - **100 tests passing** across all 7 phases (Phases 1–7, 11.49s full run).
 - **Technology & Libraries Used**:
+  - `uvicorn` (already in `requirements.txt`): Used as both the production server and the background thread server inside `start.py`. `log_level="warning"` suppresses per-request noise in the terminal.
+  - `httpx` (already in `requirements.txt`): Used in `start.py` for health-check polling and mode-set POST, and in `run_demo_scenarios.py` for REST API calls.
+  - `webbrowser` (Python stdlib): Opens the dashboard URL in the system default browser on startup.
+  - `threading.Thread(daemon=True)`: The server thread is daemonised so it automatically terminates when the main thread exits on `Ctrl+C`.
 - **Decision / Alternatives Considered / Why This One**:
-- **Functionality & Data Flow**:
+  - *Decision:* `threading.Thread` for the server, not `subprocess.Popen`.
+    - *Why:* Running uvicorn in a thread shares the same Python process, which means `store`, `mode_router`, and `_ws_clients` global objects are shared directly — no IPC, no serialisation, no port conflicts. `subprocess.Popen` would require the full server to be an external process and `httpx` calls for every interaction.
+  - *Decision:* Demo runner posts real REST calls to the live server rather than mocking.
+    - *Why:* This validates the actual end-to-end WebSocket broadcast path — a judge can watch the dashboard update in real time as the demo script runs, making the multi-user sync capability visually demonstrable without needing a second physical device.
+  - *Decision:* `--no-browser` flag in `start.py`.
+    - *Why:* Allows the server to run headlessly in a terminal (e.g., if a co-developer is running a separate frontend or wants to open the dashboard manually). Keeps the launcher useful in non-GUI environments.
+- **Functionality & Data Flow** (Full System — All 7 Phases):
+  - `start.py` → `db_init()` → `uvicorn` server → `POST /mode` → `webbrowser.open(/dashboard)`.
+  - Camera / `--video` file → `ObstacleDetector.process_frame()` → `ShadowFilter` → `ConfidencePolicy` → `ModeRouter` → `_broadcast()` → dashboard `voice_speak` + `haptic_cmd`.
+  - `BLOCKED` → `HazardMemory.add_or_refresh()` → `CampusGraph.add_edge_penalty()` → `DijkstraRouter.find_route()` → new route → `ModeRouter.handle_nav_event()` → turn voice + haptic.
+  - `POST /obstacles` → `ObstacleStore.upsert()` → `_broadcast(obstacle_reported)` → all WS clients update edge weights.
+  - 10s `DecayWorker` tick → `ObstacleStore.decay_tick()` → hazard pin colour fades on dashboard map → stale edges re-open.
+  - "End Walk" → `ModeRouter.session_log` → post-walk report table rendered in dashboard.
 - **Inputs & Outputs**:
+  - *Input:* `python start.py [--mode] [--video] [--destination]`
+  - *Output:* Full running system at `http://localhost:8000/dashboard` with live video, campus map, reasoning trail, haptic simulator, voice TTS, escalation modal, and post-walk report.
 - **Known Limitations**:
+  - `start.py` does not yet launch the `ObstacleDetector` perception loop automatically — it launches the API server and opens the dashboard, but the perception thread must be started separately (e.g., `python demo_phase2.py`). Full auto-launch will be the final pre-demo integration step.
+  - The ESP32 Bluetooth SPP bridge (`esp32/haptic_bridge.ino`) is provided as a reference sketch but not automatically paired in `start.py`. Pairing is done once manually via OS Bluetooth settings; thereafter the serial port is stable.

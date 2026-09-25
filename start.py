@@ -72,6 +72,10 @@ Examples:
     parser.add_argument("--destination", default="silveria_hall")
     parser.add_argument("--no-browser",  action="store_true",
                         help="Don't auto-open the dashboard in the browser")
+    parser.add_argument("--haptic-port", default=None,
+                        help="COM port for ESP32 Bluetooth wristband (e.g. COM5 or 'auto')")
+    parser.add_argument("--haptic-baud", default=115200, type=int,
+                        help="Baud rate for ESP32 Bluetooth wristband (default: 115200)")
     args = parser.parse_args()
 
     # Map mode shorthand
@@ -85,6 +89,7 @@ Examples:
     print(f"  Output Mode  : {output_mode}")
     print(f"  Video Source : {args.video or 'Live Webcam (index 0)'}")
     print(f"  Route        : {args.start} --> {args.destination}")
+    print(f"  Haptic HW    : {args.haptic_port or 'Web Simulator (Fallback)'}")
     print(f"  Dashboard    : http://{args.host}:{args.port}/dashboard")
     print("=" * 65)
 
@@ -114,6 +119,32 @@ Examples:
         print(f"[Mode] Output mode set to {output_mode}.")
     except Exception as e:
         print(f"[Mode] Could not set mode: {e}")
+
+    # ── 3b. Connect ESP32 Haptic Wristband (if requested) ─────────────
+    if args.haptic_port:
+        port_to_connect = args.haptic_port
+        if port_to_connect.lower() == "auto":
+            try:
+                r = httpx.get(f"http://{args.host}:{args.port}/haptic/ports", timeout=2.0)
+                port_to_connect = r.json().get("detected")
+            except Exception:
+                port_to_connect = None
+
+        if port_to_connect:
+            try:
+                r = httpx.post(
+                    f"http://{args.host}:{args.port}/haptic/connect",
+                    json={"port": port_to_connect, "baud": args.haptic_baud},
+                    timeout=3.0,
+                )
+                if r.status_code == 200:
+                    print(f"[HapticBridge] Connected to ESP32 Wristband on {port_to_connect}.")
+                else:
+                    print(f"[HapticBridge] Notice: Could not connect to {port_to_connect}. Using Web Simulator.")
+            except Exception as e:
+                print(f"[HapticBridge] Notice: Connection to {port_to_connect} failed ({e}). Using Web Simulator.")
+        else:
+            print("[HapticBridge] Notice: Auto-detect found no ESP32 wristband. Using Web Simulator.")
 
     # ── 4. Open dashboard in browser ───────────────────────────────────
     if not args.no_browser:

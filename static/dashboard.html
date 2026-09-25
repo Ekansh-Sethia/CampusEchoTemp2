@@ -169,6 +169,46 @@
     100% { transform: scale(1);    opacity: 1; }
   }
 
+  /* ── Hardware Haptic Bar ─────────────────────────────────────────── */
+  #hw-haptic-bar {
+    padding: 8px 16px; border-top: 1px solid var(--border);
+    background: rgba(15, 23, 42, 0.4);
+    display: flex; flex-direction: column; gap: 6px; flex-shrink: 0;
+  }
+  .hw-status-row { display: flex; align-items: center; gap: 8px; font-size: 0.72rem; }
+  .hw-actions-row { display: flex; align-items: center; gap: 6px; font-size: 0.68rem; }
+  .hw-status-pill {
+    display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+    border-radius: 999px; font-size: 0.68rem; font-weight: 600; white-space: nowrap;
+    border: 1px solid var(--border);
+  }
+  .hw-status-pill.connected {
+    background: rgba(34, 197, 94, 0.15); color: #86efac; border-color: rgba(34, 197, 94, 0.4);
+  }
+  .hw-status-pill.disconnected {
+    background: rgba(148, 163, 184, 0.1); color: var(--text-3); border-color: var(--border);
+  }
+  .hw-status-dot {
+    width: 6px; height: 6px; border-radius: 50%; background: currentColor;
+  }
+  .hw-status-pill.connected .hw-status-dot {
+    box-shadow: 0 0 6px #22c55e;
+  }
+  #hw-port-select {
+    padding: 2px 6px; font-size: 0.72rem; max-width: 130px; height: 26px;
+    border-radius: 6px;
+  }
+  .btn-sm { padding: 3px 8px; font-size: 0.72rem; height: 26px; border-radius: 6px; }
+  .btn-xs { padding: 2px 7px; font-size: 0.65rem; border-radius: 6px; }
+  #hw-tx-flash {
+    margin-left: auto; font-family: var(--mono); font-size: 0.62rem;
+    padding: 2px 6px; border-radius: 4px; background: rgba(255,255,255,0.05);
+    color: var(--text-3); transition: all 0.15s ease;
+  }
+  #hw-tx-flash.active {
+    background: var(--accent); color: #fff; box-shadow: 0 0 8px var(--accent-glow);
+  }
+
   /* ── Reasoning Trail Panel ──────────────────────────────────────── */
   #trail-panel { min-width: 0; }
   #trail-scroll {
@@ -413,6 +453,27 @@
         <span>RIGHT</span>
       </div>
     </div>
+    <!-- Hardware Wristband Bar (ESP32 Bluetooth SPP) -->
+    <div id="hw-haptic-bar">
+      <div class="hw-status-row">
+        <div class="hw-status-pill disconnected" id="hw-status-pill">
+          <span class="hw-status-dot"></span>
+          <span id="hw-status-text">ESP32 Offline</span>
+        </div>
+        <select id="hw-port-select" title="Select ESP32 Serial Port">
+          <option value="">No ports found</option>
+        </select>
+        <button class="btn btn-sm" id="btn-hw-scan" onclick="scanHapticPorts()" title="Scan for serial ports">↻</button>
+        <button class="btn btn-sm" id="btn-hw-toggle" onclick="toggleHapticConnect()">Connect</button>
+      </div>
+      <div class="hw-actions-row">
+        <button class="btn btn-xs" onclick="testHapticCmd('L7P2')" title="Double-tap left motor">Test Left</button>
+        <button class="btn btn-xs" onclick="testHapticCmd('R7P2')" title="Double-tap right motor">Test Right</button>
+        <button class="btn btn-xs" onclick="testHapticCmd('B9P3')" title="Rapid buzz both motors">Test Hazard</button>
+        <button class="btn btn-xs danger" onclick="testHapticCmd('O0P0')" title="Stop all motors">Stop All</button>
+        <span id="hw-tx-flash" title="Serial TX activity">TX</span>
+      </div>
+    </div>
     <!-- Active route info -->
     <div style="padding:10px 16px;border-top:1px solid var(--border);font-size:.72rem;color:var(--text-2);">
       <span id="route-info">No active route. Select a destination below.</span>
@@ -526,7 +587,11 @@ function handleMessage(msg) {
     case 'decay_tick':
       (msg.hazards || msg.active_hazards || []).forEach(h => activeHazards[h.obstacle_id] = h);
       (msg.pruned_ids || []).forEach(id => delete activeHazards[id]);
+      if (msg.haptic_bridge) updateHwStatusUI(msg.haptic_bridge);
       renderHazards(); renderHazardList(); break;
+
+    case 'haptic_bridge_status':
+      if (msg.status) updateHwStatusUI(msg.status); break;
 
     case 'obstacle_reported':
       if (msg.obstacle) { activeHazards[msg.obstacle.obstacle_id] = msg.obstacle; }
@@ -543,6 +608,7 @@ function handleMessage(msg) {
       if (currentMode !== 'HAPTIC_ONLY') speak(msg.text, msg.priority); break;
 
     case 'haptic_cmd':
+      flashHwTx(msg.cmd);
       if (currentMode !== 'VOICE_ONLY') fireHaptic(msg.cmd); break;
 
     case 'nav_event':
@@ -810,9 +876,109 @@ function exportReport() {
   a.download = `campusecho_report_${Date.now()}.json`; a.click();
 }
 
+// ── Hardware Haptic Bridge UI Handlers ────────────────────────────────
+let hwConnected = false;
+
+function updateHwStatusUI(status) {
+  hwConnected = !!status.connected;
+  const pill = document.getElementById('hw-status-pill');
+  const txt = document.getElementById('hw-status-text');
+  const btnToggle = document.getElementById('btn-hw-toggle');
+
+  if (hwConnected) {
+    pill.classList.remove('disconnected');
+    pill.classList.add('connected');
+    txt.textContent = `ESP32 (${status.port || 'BT'})`;
+    btnToggle.textContent = 'Disconnect';
+    btnToggle.classList.add('danger');
+  } else {
+    pill.classList.remove('connected');
+    pill.classList.add('disconnected');
+    txt.textContent = 'ESP32 Offline';
+    btnToggle.textContent = 'Connect';
+    btnToggle.classList.remove('danger');
+  }
+}
+
+async function scanHapticPorts() {
+  try {
+    const res = await fetch('/haptic/ports');
+    if (!res.ok) return;
+    const data = await res.json();
+    const select = document.getElementById('hw-port-select');
+    select.innerHTML = '';
+    const ports = data.ports || [];
+    if (ports.length === 0) {
+      select.innerHTML = '<option value="">No ports found</option>';
+      return;
+    }
+    ports.forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.port;
+      opt.textContent = `${p.port} (${p.description.slice(0, 18)})`;
+      if (data.detected && p.port === data.detected) opt.selected = true;
+      select.appendChild(opt);
+    });
+  } catch (e) {
+    console.warn('Error scanning haptic ports:', e);
+  }
+}
+
+async function toggleHapticConnect() {
+  if (hwConnected) {
+    try {
+      await fetch('/haptic/disconnect', { method: 'POST' });
+    } catch (e) {
+      console.warn('Disconnect error:', e);
+    }
+  } else {
+    const select = document.getElementById('hw-port-select');
+    const port = select.value;
+    if (!port) {
+      alert('Please select or scan a serial port first.');
+      return;
+    }
+    try {
+      const res = await fetch('/haptic/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ port: port, baud: 115200 })
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Failed to connect to ${port}: ${err.detail || res.statusText}`);
+      }
+    } catch (e) {
+      alert(`Connection failed: ${e}`);
+    }
+  }
+}
+
+async function testHapticCmd(cmd) {
+  flashHwTx(cmd);
+  try {
+    await fetch('/haptic/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cmd: cmd })
+    });
+  } catch (e) {
+    console.warn('Test haptic error:', e);
+  }
+}
+
+function flashHwTx(cmd) {
+  const el = document.getElementById('hw-tx-flash');
+  if (!el) return;
+  el.textContent = `TX ${cmd || ''}`.slice(0, 8);
+  el.classList.add('active');
+  setTimeout(() => el.classList.remove('active'), 250);
+}
+
 // ── Init ──────────────────────────────────────────────────────────────
 connectWS();
 renderHazardList();
+scanHapticPorts();
 // Resume audioCtx on first user gesture (browser autoplay policy)
 document.body.addEventListener('click', () => { if (audioCtx.state === 'suspended') audioCtx.resume(); }, { once: true });
 </script>

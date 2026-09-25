@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from src.db.obstacle_store import ObstacleStore
 from src.decision.hazard_memory import HazardRecord
 from src.notifications.mode_router import ModeRouter, OutputMode
+from src.notifications.haptic_bridge import HapticBridge
 from src.api.telemetry import (
     make_voice_event, make_haptic_event, make_escalation_event,
     EVENT_MODE_CHANGE,
@@ -28,6 +29,8 @@ from src.api.telemetry import (
 
 store = ObstacleStore()
 mode_router = ModeRouter(mode=OutputMode.DUAL)
+haptic_bridge = HapticBridge()
+mode_router.register_callback(haptic_bridge.on_dispatch)
 _ws_clients: Set[WebSocket] = set()
 _decay_task: Optional[asyncio.Task] = None
 
@@ -51,6 +54,8 @@ async def lifespan(app: FastAPI):
         except asyncio.CancelledError:
             pass
     print("[DecayWorker] Stopped.")
+    haptic_bridge.disconnect()
+    print("[HapticBridge] Disconnected.")
 
 
 # ─── App Definition ─────────────────────────────────────────────────────────────
@@ -99,6 +104,21 @@ class ModeRequest(BaseModel):
     mode: str  # "VOICE_ONLY" | "HAPTIC_ONLY" | "DUAL"
 
 
+class HapticConnectRequest(BaseModel):
+    """JSON body for POST /haptic/connect."""
+    port: str
+    baud: int = 115200
+
+
+class HapticTestRequest(BaseModel):
+    """JSON body for POST /haptic/test."""
+    cmd: Optional[str] = None      # e.g. "B5P2" or "L7P2"
+    raw: Optional[str] = None      # e.g. "L,7,2"
+    side: Optional[str] = None     # 'L', 'R', 'B'
+    intensity: Optional[int] = None
+    pattern: Optional[int] = None
+
+
 # ─── REST Endpoints ──────────────────────────────────────────────────────────────
 
 @app.get("/dashboard", tags=["Dashboard"], include_in_schema=False)
@@ -128,6 +148,86 @@ async def set_output_mode(body: ModeRequest):
         "timestamp": time.time(),
     })
     return {"status": "ok", "mode": new_mode.value}
+
+
+# ─── Hardware Haptic Wristband Endpoints ────────────────────────────────────────
+
+@app.get("/haptic/ports", tags=["Haptic"])
+def list_haptic_ports():
+    """Lists available serial / COM ports on the host system."""
+    ports = haptic_bridge.list_ports()
+    return {"ports": ports, "detected": haptic_bridge.find_wristband_port()}
+
+
+@app.get("/haptic/status", tags=["Haptic"])
+def get_haptic_status():
+    """Returns current connection status and telemetry of the ESP32 wristband bridge."""
+    return haptic_bridge.get_status()
+
+
+@app.post("/haptic/connect", tags=["Haptic"])
+async def connect_haptic(body: HapticConnectRequest):
+    """Connects to the ESP32 Haptic Wristband on the specified COM port."""
+    success = haptic_bridge.connect(body.port, body.baud)
+    if not success:
+        raise HTTPException(status_code=400, detail=f"Failed to connect to {body.port}")
+
+    status_data = haptic_bridge.get_status()
+    await _broadcast({
+        "event": "haptic_bridge_status",
+        "status": status_data,
+        "timestamp": time.time(),
+    })
+    return {"status": "connected", "port": body.port, "baud": body.baud}
+
+
+@app.post("/haptic/disconnect", tags=["Haptic"])
+async def disconnect_haptic():
+    """Disconnects from the ESP32 wristband and silences both motors."""
+    haptic_bridge.disconnect()
+    status_data = haptic_bridge.get_status()
+    await _broadcast({
+        "event": "haptic_bridge_status",
+        "status": status_data,
+        "timestamp": time.time(),
+    })
+    return {"status": "disconnected"}
+
+
+@app.post("/haptic/test", tags=["Haptic"])
+async def test_haptic(body: HapticTestRequest):
+    """
+    Sends an immediate test vibration command to the wristband hardware and simulator.
+    Supports protocol command (e.g. 'B5P2'), raw CSV (e.g. 'L,7,2'), or field inputs.
+    """
+    cmd_used = "B5P2"
+    if body.raw:
+        haptic_bridge.send_raw(body.raw)
+        cmd_used = body.raw
+    elif body.side is not None and body.intensity is not None and body.pattern is not None:
+        raw_cmd = f"{body.side.upper()},{body.intensity},{body.pattern}"
+        haptic_bridge.send_raw(raw_cmd)
+        cmd_used = raw_cmd
+    elif body.cmd:
+        haptic_bridge.send_haptic(body.cmd)
+        cmd_used = body.cmd
+    else:
+        haptic_bridge.send_haptic("B5P2")
+        cmd_used = "B5P2"
+
+    # Also broadcast to Web Haptic Simulator so dashboard animates in sync
+    await _broadcast({
+        "event": "haptic_cmd",
+        "cmd": cmd_used if not "," in cmd_used else "B5P2",
+        "raw_hw": cmd_used,
+        "timestamp": time.time(),
+    })
+
+    return {
+        "status": "dispatched",
+        "command": cmd_used,
+        "hardware_connected": haptic_bridge.is_connected,
+    }
 
 
 @app.get("/status", response_model=ActiveHazardsResponse, tags=["Obstacles"])
@@ -208,6 +308,7 @@ async def ws_telemetry(websocket: WebSocket):
             "event": "snapshot",
             "count": len(hazards),
             "hazards": [h.model_dump() for h in hazards],
+            "haptic_bridge": haptic_bridge.get_status(),
             "timestamp": time.time(),
         }))
 

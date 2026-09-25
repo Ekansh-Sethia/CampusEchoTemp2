@@ -1,6 +1,7 @@
 """Notifications module: VoiceEngine, HapticEncoder, ModeRouter."""
 from .voice_engine import VoiceEngine, VoiceInstruction, VoiceQueue
 from .haptic_encoder import HapticEncoder, HapticCommand
+from .haptic_bridge import HapticBridge
 from .mode_router import ModeRouter, OutputMode, DispatchResult
 
 __all__ = [
@@ -9,6 +10,7 @@ __all__ = [
     "VoiceQueue",
     "HapticEncoder",
     "HapticCommand",
+    "HapticBridge",
     "ModeRouter",
     "OutputMode",
     "DispatchResult",

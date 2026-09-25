@@ -55,6 +55,16 @@ class ModeRouter:
     def set_mode(self, mode: OutputMode) -> None:
         """Switch output mode at runtime (thread-safe — single assignment)."""
         self.mode = mode
+        if mode == OutputMode.VOICE_ONLY:
+            # Silence physical motors and haptic outputs immediately
+            silence_res = DispatchResult(
+                voice_text=None,
+                haptic_cmd="O0P0",
+                mode=OutputMode.VOICE_ONLY,
+                event_type="mode_silence",
+            )
+            for cb in self._callbacks:
+                cb(silence_res)
 
     def register_callback(self, callback: Callable[[DispatchResult], None]) -> None:
         """Register a callback that fires on every dispatched output event."""
@@ -114,7 +124,7 @@ class ModeRouter:
         # Determine haptic turn direction
         step_dir = "straight"
         if event.current_step:
-            step_dir = event.current_step.direction  # "straight" | "left" | "right"
+            step_dir = getattr(event.current_step, "turn_direction", None) or getattr(event.current_step, "direction", "straight")
         haptic_cmd = self.haptic.encode_turn(step_dir)
 
         # Arrival gets a special haptic

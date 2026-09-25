@@ -306,4 +306,70 @@ Each phase section documents:
   - *Output:* Full running system at `http://localhost:8000/dashboard` with live video, campus map, reasoning trail, haptic simulator, voice TTS, escalation modal, and post-walk report.
 - **Known Limitations**:
   - `start.py` does not yet launch the `ObstacleDetector` perception loop automatically — it launches the API server and opens the dashboard, but the perception thread must be started separately (e.g., `python demo_phase2.py`). Full auto-launch will be the final pre-demo integration step.
-  - The ESP32 Bluetooth SPP bridge (`esp32/haptic_bridge.ino`) is provided as a reference sketch but not automatically paired in `start.py`. Pairing is done once manually via OS Bluetooth settings; thereafter the serial port is stable.
+  - Windows Bluetooth pairing is configured once manually in OS Bluetooth settings (`CampusEcho-Wristband`); thereafter the assigned virtual COM port remains stable across restarts.
+
+---
+
+## Hardware Integration: ESP32 Haptic Wristband (`campusecho_haptic_wristband.ino`)
+
+- **What Was Built**:
+  - `src/notifications/haptic_bridge.py`:
+    - `HapticBridge`: Hardware serial communication driver connecting CampusEcho to the ESP32 wristband over Bluetooth Classic SPP virtual COM ports.
+    - **Protocol Translation Layer**: Bridges CampusEcho's internal token format (`{side}{intensity}P{pattern}`) to firmware newline-terminated CSV format (`<side>,<intensity>,<pattern>\n`).
+    - **Pattern Remapping**:
+      - `P1` (Single / slow pulse) $\rightarrow$ Firmware `1` (Slow pulse: 500ms on / 500ms off — walk straight confirmation, start confirmation)
+      - `P2` (Double-tap) $\rightarrow$ Firmware `3` (Double-pulse: 120ms on/100ms off/120ms on/600ms off — left/right turn instructions, caution)
+      - `P3` (Rapid burst) $\rightarrow$ Firmware `2` (Rapid pulse: 150ms on / 100ms off — BLOCKED obstacle hazard alert)
+      - `P4` (Long hold) $\rightarrow$ Firmware `0` (Continuous vibration — destination reached)
+      - `P5` (SOS pattern) $\rightarrow$ Firmware `3` (Critical double-pulse at max intensity — ESCALATE emergency)
+      - Direct CSV passthrough supported (`L,7,2`, `O,0,0`).
+    - **Non-blocking Worker Queue**: Commands are enqueued into a thread-safe `queue.Queue(maxsize=100)` and processed by a dedicated daemon worker thread (`HapticBridgeWorker`). Serial transmission never stalls the vision perception loop or FastAPI async handlers.
+    - **Port Discovery & Auto-Detect**: Enumerate system COM ports with `serial.tools.list_ports.comports()`, heuristically searching for `CampusEcho-Wristband` or standard Bluetooth SPP signatures.
+    - **Graceful Hardware Degradation**: If hardware is absent or disconnected, packets drop cleanly without throwing exceptions, allowing the Web Haptic Simulator to operate uninterrupted.
+  - `campusecho_haptic_wristband.ino`:
+    - ESP32-WROOM-32 DevKitC firmware driving two coin ERM vibration motors via low-side NPN transistors (GPIO 25 = Left, GPIO 26 = Right).
+    - Uses ESP32 Arduino Core 3.x pin-based LEDC PWM at 5 kHz (eliminating motor whine).
+    - Enforces a 3000ms safety failsafe (`FAILSAFE_TIMEOUT_MS = 3000`) that automatically kills both motors if no commands are received from the host.
+  - `src/notifications/mode_router.py` (additions):
+    - `set_mode(OutputMode.VOICE_ONLY)` dispatches an immediate silence event (`O,0,0\n`) to shut off physical motors instantly when switching away from haptic modes.
+    - `handle_nav_event()` robustly extracts direction from either `turn_direction` or `direction` attributes.
+  - `src/api/server.py` (additions):
+    - Instantiates global `haptic_bridge` and registers `haptic_bridge.on_dispatch` with `mode_router`.
+    - `GET /haptic/ports` — lists available COM ports and detected wristband port.
+    - `GET /haptic/status` — returns connection state, port, baud, TX count, error count, and last command sent.
+    - `POST /haptic/connect` — connects to requested COM port (`{"port": "COM5", "baud": 115200}`).
+    - `POST /haptic/disconnect` — disconnects and silences motors.
+    - `POST /haptic/test` — dispatches immediate test pulse to both physical wristband and Web Haptic Simulator.
+    - WebSocket `/ws/telemetry` snapshot includes `haptic_bridge` status on client connection.
+    - Server lifespan cleanup disconnects serial bridge on shutdown.
+  - `static/dashboard.html` (additions):
+    - Added **Hardware Wristband (ESP32)** sub-panel below the Haptic Simulator:
+      - Live status badge: 🟢 `ESP32 (COM5)` or ⚪ `ESP32 Offline`.
+      - COM Port selector with `↻` Scan button.
+      - Connect / Disconnect toggle button.
+      - Quick-test vibration buttons: "Test Left", "Test Right", "Test Hazard", "Stop All".
+      - Real-time `TX` activity flash LED.
+  - `start.py` (additions):
+    - Added `--haptic-port` (e.g. `COM5` or `auto`) and `--haptic-baud` CLI arguments with graceful fallback to the Web Simulator if the port is unreachable.
+  - `docs/HARDWARE_SETUP.md`:
+    - Full hardware documentation: Bill of Materials, transistor circuit schematic, ESP32 Arduino IDE flashing steps, Windows Bluetooth pairing instructions, and verification steps.
+  - `tests/test_haptic_bridge.py`:
+    - 32 unit and integration tests covering protocol translation, clamping, mock serial connect/disconnect/write, port discovery, ModeRouter integration across all modes, and FastAPI REST endpoints.
+  - **132 tests passing** across entire repository.
+- **Technology & Libraries Used**:
+  - `pyserial>=3.5`: Python serial communications library for COM port access.
+  - `BluetoothSerial.h`: ESP32 Classic Bluetooth Serial Port Profile (SPP).
+  - ESP32 Core 3.x LEDC PWM API (`ledcAttach` + `ledcWrite`).
+- **Decision / Alternatives Considered / Why This One**:
+  - *Decision:* Bluetooth Classic SPP rather than Bluetooth Low Energy (BLE) GATT.
+    - *Why:* Windows natively pairs Bluetooth Classic SPP devices directly as virtual serial COM ports (`COMx`). This allows standard `pyserial` communication with zero third-party drivers, no native C++ WinRT bindings, and no complex BLE MTU fragmentation logic. BLE on Windows frequently suffers from permission headaches and dropped GATT characteristics during high-frequency telemetry.
+  - *Decision:* Decoupled asynchronous worker queue.
+    - *Why:* Serial port I/O and Bluetooth RF latency can incur 10–50ms delays per write. Placing serial transmission in a background daemon thread completely shields the 30 FPS vision perception loop and web server from serial jitter.
+  - *Decision:* Dual-mode co-existence (Hardware Bridge + Web Simulator).
+    - *Why:* The physical wristband and the Web Haptic Simulator listen to the same `haptic_cmd` stream. During a live demo or presentation, judges and caregivers see visual pulsing rings and hear spatial audio while the user simultaneously feels tactile vibration on their wrists. If the hardware battery dies, the presentation continues without a hitch.
+- **Data Flow**:
+  - `NavigationEvent` / `PolicyDecision` $\rightarrow$ `ModeRouter` $\rightarrow$ `DispatchResult(haptic_cmd="L7P2")`.
+  - $\rightarrow$ WebSocket Broadcast $\rightarrow$ Dashboard Web Audio & Ring Pulse Simulator.
+  - $\rightarrow$ `HapticBridge.on_dispatch()` $\rightarrow$ `translate_to_firmware("L7P2")` $\rightarrow$ `"L,7,3\n"`.
+  - $\rightarrow$ `HapticBridgeWorker` $\rightarrow$ `serial.Serial.write(b"L,7,3\n")` $\rightarrow$ Bluetooth SPP $\rightarrow$ ESP32 DevKitC.
+  - $\rightarrow$ ESP32 `handleCommand()` $\rightarrow$ PWM on `GPIO 25` $\rightarrow$ Left ERM coin motor double-pulses.

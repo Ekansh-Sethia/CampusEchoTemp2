@@ -65,7 +65,13 @@ def run_perception_demo(
         print(f">> Using video file / image source: {source}")
 
     video_source = VideoSource(source=source, loop_file=True, target_fps=10.0)
-    detector = ObstacleDetector(confidence_threshold=0.35, enable_heuristics=True)
+    detector = ObstacleDetector(
+        confidence_threshold=0.45,          # Hardened from 0.35
+        alert_confidence_threshold=0.55,    # Secondary gate before haptic/audio alert
+        max_alert_distance_m=4.0,           # Don't alert on obstacles beyond 4 m
+        stability_required_sec=2.0,         # Static obstacles must persist 2 s before alerting
+        enable_heuristics=True
+    )
 
     # Initialize ESP32 Haptic Bridge
     bridge = HapticBridge()

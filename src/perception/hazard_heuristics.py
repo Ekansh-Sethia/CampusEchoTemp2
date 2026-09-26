@@ -146,7 +146,7 @@ class EnvironmentalHazardDetector:
                 x_max = max(x1, x2)
                 horizontal_lines.append((y_abs, x_min, x_max, x_max - x_min))
 
-        if len(horizontal_lines) < 3:
+        if len(horizontal_lines) < 4:   # Was 3 — require ≥4 distinct step edges
             return None
 
         horizontal_lines.sort(key=lambda s: s[0], reverse=True)
@@ -169,7 +169,7 @@ class EnvironmentalHazardDetector:
             max_x = max(s[2] for s in current_cluster)
             clustered_steps.append((avg_y, min_x, max_x, max_x - min_x))
 
-        if len(clustered_steps) < 3:
+        if len(clustered_steps) < 4:   # Was 3 — four distinct risers minimum
             return None
 
         y_positions = [s[0] for s in clustered_steps]
@@ -179,7 +179,8 @@ class EnvironmentalHazardDetector:
         std_spacing = float(np.std(spacings))
 
         # Rejection: Constant Spacing Check (Paver blocks / flat tile seams)
-        if mean_spacing < 14 or (std_spacing / (mean_spacing + 1e-5)) < 0.15:
+        # Raised mean_spacing threshold to 20 px — a realistic step height viewed at ≤6m
+        if mean_spacing < 20 or (std_spacing / (mean_spacing + 1e-5)) < 0.15:
             return None
 
         # Rejection: Sawtooth Shading Check
@@ -194,10 +195,10 @@ class EnvironmentalHazardDetector:
 
             if riser_band.size > 0 and tread_plane.size > 0:
                 contrast = abs(float(np.mean(tread_plane)) - float(np.mean(riser_band)))
-                if contrast >= 14.0:
+                if contrast >= 20.0:   # Was 14 — real risers cast noticeably stronger shade
                     sawtooth_transitions += 1
 
-        if sawtooth_transitions < 2:
+        if sawtooth_transitions < 3:   # Was 2 — demand at least 3 strong riser/tread transitions
             return None
 
         railings_found = False
@@ -233,7 +234,7 @@ class EnvironmentalHazardDetector:
         shd_score, cal_conf = self.shadow_analyzer.analyze_obstacle(
             frame, bbox, "stair", raw_conf
         )
-        if shd_score >= 0.75:
+        if shd_score >= 0.60:   # Was 0.75 — also catch hue-shifted pavement shadows
             return None
 
         return DetectedObstacle(
@@ -270,8 +271,9 @@ class EnvironmentalHazardDetector:
 
         # 1. Detect Leaf / Foliage Density Clusters
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        # Green / olive foliage hues with solid leaf saturation
-        lower_green = np.array([30, 45, 40])
+        # Tighter saturation (55) and value (50) floors reduce false-positives from:
+        # yellowed grass, washed-out signage, and pale reflections.
+        lower_green = np.array([32, 55, 50])
         upper_green = np.array([85, 255, 255])
         green_mask = cv2.inRange(hsv, lower_green, upper_green)
         green_mask[exclusion_mask > 0] = 0
@@ -284,7 +286,7 @@ class EnvironmentalHazardDetector:
         foliage_boxes: List[Tuple[int, int, int, int]] = []
         for cnt in contours_f:
             area = cv2.contourArea(cnt)
-            if area >= 1800:
+            if area >= 2500:   # Was 1800 — filter smaller specular/noise blobs
                 x, y, cw, ch = cv2.boundingRect(cnt)
                 # Leaves/canopy/branches are elevated (not flat on floor) and span walking corridor
                 if y < int(h * 0.65) and (x + cw) > w * 0.15 and x < w * 0.85:
@@ -676,7 +678,40 @@ class EnvironmentalHazardDetector:
     def _detect_wall(self, frame: np.ndarray, h: int, w: int) -> Optional[DetectedObstacle]:
         """
         Detects imminent planar wall obstruction right in front of user (<1.5m).
+
+        Guard rails added to reduce false positives on outdoor campus scenes:
+          1. Sky-fraction check: if the top 30% of the frame is bright (>170 mean value),
+             the scene is outdoors with visible sky -> no wall close in front.
+          2. Top-vs-bottom brightness: walls cause top/bottom to look similar.
+          3. Tightened edge density and color std thresholds.
+          4. Confidence set to 0.75 (below emergency-override zone) so the 2-second
+             temporal stability check in detector.py applies and prevents
+             a single noisy frame from triggering a wall alert.
         """
+        # Guard 1: Sky detection (outdoor scene with open view ahead — no imminent wall).
+        # True sky: high Value AND blue/cyan hue (H 85–130 in OpenCV's 0-180 scale)
+        # AND meaningful saturation (sky has S ≥ 25; light-gray walls are achromatic, S < 15).
+        # Indoor walls: neutral gray/warm gray — high V but very low saturation, no blue hue.
+        top_strip = frame[:int(h * 0.30), :]
+        top_hsv = cv2.cvtColor(top_strip, cv2.COLOR_BGR2HSV)
+        top_v = top_hsv[:, :, 2]
+        top_s = top_hsv[:, :, 1]
+        top_h = top_hsv[:, :, 0]
+        bright_mask = top_v > 140
+        if bright_mask.sum() > 0:
+            h_bright = top_h[bright_mask]
+            s_bright = top_s[bright_mask]
+            sky_hue_fraction = float(np.mean((h_bright >= 85) & (h_bright <= 130)))
+            mean_s_bright = float(np.mean(s_bright))
+            # Require both sky hue AND meaningful saturation (S ≥ 25).
+            # Walls are achromatic (S < 15) even if they have a slight hue bias.
+            is_sky = (
+                mean_s_bright >= 25.0 and
+                ((sky_hue_fraction >= 0.30) or (sky_hue_fraction >= 0.15 and mean_s_bright >= 40))
+            )
+            if is_sky:
+                return None   # Outdoor sky visible — no imminent wall
+
         top_mean = float(np.mean(frame[:int(h * 0.35), :]))
         bottom_mean = float(np.mean(frame[int(h * 0.65):, :]))
         if abs(top_mean - bottom_mean) > 25.0:
@@ -691,12 +726,15 @@ class EnvironmentalHazardDetector:
         edge_density = np.count_nonzero(edges) / edges.size
 
         color_std = float(np.std(gray))
-        if edge_density < 0.02 and color_std < 20.0:
+        # Tightened: edge_density < 0.015 (was 0.02) and color_std < 16.0 (was 20.0)
+        if edge_density < 0.015 and color_std < 16.0:
             bbox = (int(w * 0.15), int(h * 0.2), int(w * 0.85), int(h * 0.95))
             dist = 1.10
+            # Confidence 0.75: below emergency-override threshold (1.5m), so this
+            # obstacle still goes through the 2-second temporal stability check in detector.py.
             return DetectedObstacle(
                 label="wall",
-                confidence=0.85,
+                confidence=0.75,
                 bbox=bbox,
                 bbox_normalized=(0.15, 0.20, 0.85, 0.95),
                 distance_m=dist,

@@ -270,10 +270,30 @@ class ShadowLightAnalyzer:
                 shadow_likelihood = 0.40
 
         elif label in ("stair",):
-            # Real stair has vertical risers and horizontal step edge progression.
-            # A single light/shadow boundary on flat pavement has invariant hue and no riser height.
-            if is_chromatic_invariant and (0.80 <= texture_ratio <= 1.25):
-                shadow_likelihood = 0.75
+            # Real stairs have distinct 3D geometry (risers+treads) which raises texture_ratio.
+            # Flat pavement shadows mimic horizontal line patterns but have near-uniform texture.
+            #
+            # Decision tree:
+            #   texture_ratio >= 1.80  → genuine 3D edge geometry          → 0.10 (real stair)
+            #   chromatic invariant + flat texture                          → 0.82 (flat shadow)
+            #   strong value drop + flat texture (hue-shifted)              → 0.65 (hue-shifted shadow)
+            #   moderate value drop + flat texture                          → 0.45 (likely shadow)
+            #   otherwise                                                   → 0.15 (uncertain, pass-through)
+            if texture_ratio >= 1.80:
+                # Genuine 3D geometry: risers produce meaningfully different surface texture
+                shadow_likelihood = 0.10
+            elif is_chromatic_invariant and texture_ratio <= 1.40:
+                # Classic flat pavement shadow: hue/sat preserved, only brightness drops, no real texture change
+                shadow_likelihood = 0.82
+            elif is_chromatic_invariant and diff_v >= 18.0:
+                # Shadow with slight texture variation but clear value drop — still likely shadow
+                shadow_likelihood = 0.65
+            elif diff_v >= 22.0 and texture_ratio <= 1.50:
+                # Hue-shifted shadow (e.g., sky-reflected light adds blue tint) but value & texture flat
+                shadow_likelihood = 0.65
+            elif diff_v >= 15.0 and texture_ratio <= 1.35:
+                # Moderate value contrast + near-flat texture — possibly shadow
+                shadow_likelihood = 0.45
             else:
                 shadow_likelihood = 0.15
 

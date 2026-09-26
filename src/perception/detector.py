@@ -1,5 +1,13 @@
 """YOLOv8n-based obstacle detection and frame analysis engine with temporal debouncing,
 multi-class recognition, monocular distance estimation, and kinematic tracking.
+
+Fix changelog (v2):
+  - Confidence threshold raised from 0.35 → 0.45 (fewer low-quality YOLO picks).
+  - alert_confidence_threshold (default 0.55): secondary gate before triggering haptic/audio.
+  - max_alert_distance_m (default 4.0): obstacles beyond this are tracked but never alerted.
+  - stability_required_sec (default 2.0): static/parked obstacles must persist for ≥2 s
+    before becoming primary_obstacle.  Moving-approaching objects bypass this wait.
+  - Moving-away obstacles (velocity_mps ≤ -0.25 m/s) are never elevated to primary.
 """
 import threading
 import time
@@ -47,15 +55,21 @@ class ObstacleDetector:
     def __init__(
         self,
         model_name: str = "yolov8n.pt",
-        confidence_threshold: float = 0.35,
+        confidence_threshold: float = 0.45,          # Raised from 0.35 – fewer noisy picks
         target_classes: Optional[Set[str]] = None,
         focal_length_px: float = 650.0,
-        enable_heuristics: bool = True
+        enable_heuristics: bool = True,
+        max_alert_distance_m: float = 4.0,           # Beyond this: track silently, no alert
+        alert_confidence_threshold: float = 0.55,    # Secondary gate before alerting
+        stability_required_sec: float = 2.0          # Static/parked must persist ≥N s
     ):
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
         self.target_classes = target_classes or TARGET_COCO_CLASSES
         self.enable_heuristics = enable_heuristics
+        self.max_alert_distance_m = max_alert_distance_m
+        self.alert_confidence_threshold = alert_confidence_threshold
+        self.stability_required_sec = stability_required_sec
 
         self.distance_estimator = DistanceEstimator(focal_length_px)
         self.shadow_analyzer = ShadowLightAnalyzer()
@@ -69,6 +83,10 @@ class ObstacleDetector:
 
         # Debounce tracking: {label: consecutive_frames_seen}
         self._seen_history: Dict[str, int] = {}
+
+        # Temporal stability tracking: {label: first_timestamp_when_obstacle_was_static}
+        # Cleared when the label disappears from view or starts moving.
+        self._label_first_stable: Dict[str, float] = {}
 
     def _load_model_if_needed(self):
         """Lazy loader for YOLO model to allow import without immediate model weight download."""
@@ -191,32 +209,76 @@ class ObstacleDetector:
             # 4. Kinematic Tracking across frames (velocity, moving vs parked state)
             self.tracker.update(detected_obstacles, timestamp=now_ts)
 
-            # 4. Apply Temporal Debounce / Hysteresis
+            # 5. Temporal Debounce / Hysteresis (frame counter)
             for lbl in current_labels_seen:
                 self._seen_history[lbl] = self._seen_history.get(lbl, 0) + 1
             for lbl in list(self._seen_history.keys()):
                 if lbl not in current_labels_seen:
                     self._seen_history[lbl] = max(0, self._seen_history[lbl] - 1)
 
+            # 6. Temporal Stability Clock (wall-clock, per label)
+            # Tracks how long a label has been continuously *static* in the walking lane.
+            # Cleared when the object becomes dynamic or leaves the lane/view.
+            current_static_lane_labels: Set[str] = set()
+            for obs in detected_obstacles:
+                if obs.in_walking_lane and not obs.is_moving:
+                    current_static_lane_labels.add(obs.label)
+                    if obs.label not in self._label_first_stable:
+                        self._label_first_stable[obs.label] = now_ts  # Start the stability clock
+                elif obs.is_moving and obs.label in self._label_first_stable:
+                    # Object started moving again — reset its stability clock
+                    del self._label_first_stable[obs.label]
+            # Prune labels no longer visible
+            for lbl in list(self._label_first_stable.keys()):
+                if lbl not in current_labels_seen:
+                    del self._label_first_stable[lbl]
+
             # Filter or prioritize confirmed obstacles in walking lane
             lane_obstacles = [o for o in detected_obstacles if o.in_walking_lane]
 
-            # Primary obstacle is the closest / highest urgency confirmed in lane
-            primary_obs: Optional[DetectedObstacle] = None
-            if lane_obstacles:
-                # Priority ranking: critical urgency first, then moving hazards, then closest distance
-                lane_obstacles.sort(
-                    key=lambda o: (
-                        0 if o.urgency == "critical" else (1 if o.is_moving else 2),
-                        o.distance_m,
-                        -o.confidence
-                    )
+            # Priority ranking: critical urgency first, then approaching movers, then distance
+            lane_obstacles.sort(
+                key=lambda o: (
+                    0 if o.urgency == "critical" else (1 if (o.is_moving and o.velocity_mps >= 0.25) else 2),
+                    o.distance_m,
+                    -o.confidence
                 )
-                closest = lane_obstacles[0]
-                seen_count = self._seen_history.get(closest.label, 1)
-                # If seen for >= debounce_frames or urgency is high/critical, confirm as primary
-                if seen_count >= debounce_frames or closest.urgency in ("critical", "high"):
-                    primary_obs = closest
+            )
+
+            # Select primary obstacle by walking through sorted candidates and applying all filters
+            primary_obs: Optional[DetectedObstacle] = None
+            for candidate in lane_obstacles:
+                lbl = candidate.label
+
+                # ── Rule 1: Moving-away objects are never a hazard ─────────────────────
+                if candidate.velocity_mps <= -0.25:
+                    continue
+
+                # ── Rule 2: Distance cap ──────────────────────────────────────────────
+                if candidate.distance_m > self.max_alert_distance_m:
+                    continue
+
+                # ── Rule 3: Frame debounce ────────────────────────────────────────────
+                seen_count = self._seen_history.get(lbl, 0)
+                if seen_count < debounce_frames and candidate.urgency not in ("critical", "high"):
+                    continue
+
+                # ── Rule 4: Alert-confidence gate ─────────────────────────────────────
+                # Emergency override: critically-close obstacle always wins.
+                is_emergency = (candidate.urgency == "critical" and candidate.distance_m <= 1.5)
+                if candidate.confidence < self.alert_confidence_threshold and not is_emergency:
+                    continue
+
+                # ── Rule 5: 2-second temporal stability for static/parked obstacles ──
+                if not candidate.is_moving:
+                    stable_ts = self._label_first_stable.get(lbl)
+                    stable_for_sec = (now_ts - stable_ts) if stable_ts is not None else 0.0
+                    if stable_for_sec < self.stability_required_sec and not is_emergency:
+                        continue  # Not confirmed long enough yet — keep tracking silently
+
+                # All filters passed — this is the primary obstacle
+                primary_obs = candidate
+                break
 
             proc_time_ms = round((time.time() - start_time) * 1000.0, 1)
             fps = round(1000.0 / proc_time_ms, 1) if proc_time_ms > 0 else 0.0

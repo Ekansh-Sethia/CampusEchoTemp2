@@ -71,43 +71,74 @@ class DistanceEstimator:
 
         scaled_focal_length = self.focal_length_px * (frame_height / 480.0)
 
-        # 1. Ground-plane perspective projection (based on ground contact point ymax or contact_y)
+        # 1. Continuous perspective ground-plane projection (calibrated inverse-distance curve)
         ground_y = contact_y if contact_y is not None else ymax
-        bottom_norm = max(0.0, min(1.0, ground_y / frame_height))  # 0.0 at top, 1.0 at bottom edge
-        if bottom_norm > 0.35:
-            dist_ground = 0.8 + 4.5 * ((1.0 - bottom_norm) ** 1.8)
+        y_norm = max(0.0, min(1.0, ground_y / frame_height))
+        y_horizon = 0.36
+        if y_norm <= y_horizon:
+            dist_ground = 8.0
         else:
-            dist_ground = 5.5
-
-        # Check if object is cropped at frame edges (unreliable height/width)
-        is_cropped = (ymin <= 5) or (ymax >= frame_height - 5) or (xmin <= 5) or (xmax >= frame_width - 5)
+            v = (y_norm - y_horizon) / (1.0 - y_horizon)
+            dist_ground = 0.60 + 1.25 * ((1.0 - v) / (v + 0.18))
 
         conf = self._get_class_config(label)
         primary_dim = conf.get("primary_dimension", "height")
         norm_label = label.lower()
 
-        if is_cropped or primary_dim == "ground_contact" or norm_label in (
-            "stone", "rock", "rubble", "large_stone", "pothole", "bottle", "unidentified",
+        # Edge crop reliability factors [0.05 to 1.0]
+        # Smoothly down-weights height or width when truncated at screen border to prevent jumpiness
+        crop_margin = 12.0
+        crop_top = max(0.05, min(1.0, ymin / crop_margin))
+        crop_bot = max(0.05, min(1.0, (frame_height - ymax) / crop_margin))
+        crop_left = max(0.05, min(1.0, xmin / crop_margin))
+        crop_right = max(0.05, min(1.0, (frame_width - xmax) / crop_margin))
+
+        r_vert = crop_top * crop_bot
+        r_horiz = crop_left * crop_right
+
+        real_width = float(conf.get("real_width_m") or conf.get("trunk_diameter_m") or 0.50)
+        real_height = float(conf.get("real_height_m", 0.80))
+
+        # Aspect ratio check for upright objects (detect torso vs full body)
+        # Prevents torso/half-body detections from severely overestimating distance
+        ar = bbox_height / float(bbox_width)
+        if norm_label == "person" and ar < 2.2:
+            eff_height = min(real_height, real_width * max(1.4, ar))
+        else:
+            eff_height = real_height
+
+        dist_height = (scaled_focal_length * eff_height) / bbox_height
+        dist_width = (scaled_focal_length * real_width) / bbox_width
+
+        # Multi-cue continuous fusion based on class semantics and boundary reliability
+        if norm_label == "unidentified":
+            safety_factor = float(conf.get("safety_factor", 0.85))
+            estimated_dist = max(0.35, dist_ground * safety_factor)
+
+        elif primary_dim == "ground_contact" or norm_label in (
+            "stone", "rock", "rubble", "large_stone", "pothole", "bottle",
             "two_wheeler", "bicycle", "motorcycle", "bike", "scooter"
         ):
-            # Ground-plane projection for ground-contact / irregular / cropped objects
-            estimated_dist = dist_ground
-            if norm_label == "unidentified":
-                # Conservative fail-safe: assume closer than estimated to guarantee safety
-                safety_factor = float(conf.get("safety_factor", 0.85))
-                estimated_dist = max(0.35, estimated_dist * safety_factor)
+            # Ground-plane projection dominant for low-profile / irregular floor hazards
+            w_g = 0.85
+            w_w = 0.15 * r_horiz
+            estimated_dist = (w_g * dist_ground + w_w * dist_width) / (w_g + w_w)
 
         elif primary_dim == "width":
-            real_width = conf.get("real_width_m") or conf.get("trunk_diameter_m") or 1.80
-            dist_width = (scaled_focal_length * real_width) / bbox_width
-            # Cross-check with ground plane to reject outliers
-            estimated_dist = 0.75 * dist_width + 0.25 * dist_ground
+            # Width-dominant objects (vehicles, pillars, walls, gates)
+            w_w = 0.70 * r_horiz
+            w_g = 0.20
+            w_h = 0.10 * r_vert
+            total_w = w_w + w_g + w_h
+            estimated_dist = (w_w * dist_width + w_g * dist_ground + w_h * dist_height) / total_w
 
-        else:  # primary_dim == "height"
-            real_height = conf.get("real_height_m", 0.80)
-            dist_height = (scaled_focal_length * real_height) / bbox_height
-            # Cross-check with ground plane
-            estimated_dist = 0.70 * dist_height + 0.30 * dist_ground
+        else:
+            # Height-dominant objects (person, chair, stair, backpack, etc.)
+            w_h = 0.50 * r_vert
+            w_w = 0.35 * r_horiz
+            w_g = 0.15
+            total_w = w_h + w_w + w_g
+            estimated_dist = (w_h * dist_height + w_w * dist_width + w_g * dist_ground) / total_w
 
         # Clamp between 0.3m (immediate collision) and 10.0m (far field)
         return round(float(max(0.3, min(10.0, estimated_dist))), 2)

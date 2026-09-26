@@ -154,12 +154,14 @@ class HapticBridge:
             self.baudrate = baudrate
 
             try:
-                self.serial_conn = serial.Serial(
-                    port=port,
-                    baudrate=baudrate,
-                    timeout=1.0,
-                    write_timeout=1.0,
-                )
+                self.serial_conn = serial.Serial()
+                self.serial_conn.port = port
+                self.serial_conn.baudrate = baudrate
+                self.serial_conn.timeout = 1.0
+                self.serial_conn.write_timeout = 1.0
+                self.serial_conn.dtr = False
+                self.serial_conn.rts = False
+                self.serial_conn.open()
                 self._connected = True
                 logger.info(f"[HapticBridge] Connected to ESP32 on {port} @ {baudrate} baud.")
                 return True
@@ -278,22 +280,36 @@ class HapticBridge:
     @classmethod
     def find_wristband_port(cls) -> Optional[str]:
         """
-        Heuristically searches available COM ports for the CampusEcho wristband
-        or a standard Bluetooth Serial Port Profile device.
+        Heuristically searches available COM ports for the CampusEcho wristband,
+        Bluetooth Serial Port Profile devices, or standard ESP32 USB-UART bridges (CP210x, CH340).
         """
         ports = cls.list_ports()
-        # Look for explicit name first
+        if not ports:
+            return None
+
+        # 1. Look for explicit CampusEcho name
         for p in ports:
             desc = p["description"].lower()
             hwid = p["hwid"].lower()
             if "campusecho" in desc or "campusecho" in hwid:
                 return p["port"]
 
-        # Look for Bluetooth SPP port signatures
+        # 2. Look for Bluetooth SPP port signatures
         for p in ports:
             desc = p["description"].lower()
             if "bluetooth" in desc or "standard serial over bluetooth" in desc:
                 return p["port"]
+
+        # 3. Look for standard ESP32 USB UART bridges (CP210x, CH340, FTDI)
+        for p in ports:
+            desc = p["description"].lower()
+            hwid = p["hwid"].lower()
+            if any(k in desc or k in hwid for k in ("cp210", "ch340", "ch341", "ftdi", "usb to uart", "usb-to-uart")):
+                return p["port"]
+
+        # 4. If exactly one COM port exists, assume it is the target device
+        if len(ports) == 1:
+            return ports[0]["port"]
 
         return None
 

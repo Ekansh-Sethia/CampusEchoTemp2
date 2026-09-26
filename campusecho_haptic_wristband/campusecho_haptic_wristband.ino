@@ -218,7 +218,18 @@ void setup() {
 }
 
 void loop() {
-  // --- Read incoming Bluetooth data, line by line ---
+  // --- Read incoming USB Serial data (cable connection) ---
+  while (Serial.available()) {
+    char c = Serial.read();
+    if (c == '\n') {
+      handleCommand(inputBuffer);
+      inputBuffer = "";
+    } else if (c != '\r') {
+      inputBuffer += c;
+    }
+  }
+
+  // --- Read incoming Bluetooth data (wireless connection) ---
   while (SerialBT.available()) {
     char c = SerialBT.read();
     if (c == '\n') {

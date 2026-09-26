@@ -3,24 +3,57 @@ import argparse
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 import cv2
 
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from src.perception.detector import ObstacleDetector
+from src.perception.models import DetectedObstacle
 from src.perception.video_source import VideoSource
+from src.notifications.haptic_bridge import HapticBridge
 
 
-def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int = 100):
+def map_obstacle_to_haptic(obstacle: Optional[DetectedObstacle]) -> str:
+    """Maps a detected primary obstacle to an ESP32 firmware CSV vibration command."""
+    if not obstacle or not obstacle.in_walking_lane:
+        return "O,0,0\n"
+
+    # Determine motor side
+    pos = (obstacle.horizontal_position or "center").lower()
+    if pos == "left":
+        side = "L"
+    elif pos == "right":
+        side = "R"
+    else:
+        side = "B"
+
+    # Determine intensity and pattern based on urgency
+    urgency = (obstacle.urgency or "low").lower()
+    if urgency == "critical":
+        return f"{side},9,2\n"  # Max strength, rapid pulse
+    elif urgency == "high":
+        return f"{side},7,3\n"  # Strong strength, double-pulse
+    else:
+        return f"{side},5,1\n"  # Medium strength, slow pulse
+
+
+def run_perception_demo(
+    source_arg: str,
+    no_gui: bool = False,
+    max_frames: int = 1000,
+    haptic_port: str = "auto",
+    haptic_baud: int = 115200,
+):
     print("=" * 65)
     print("  CampusEcho - Phase 2 Perception Engine Demo")
-    print("  (YOLOv8n + Hazard Heuristics + Distance Estimation)")
+    print("  (YOLOv8 + Hazard Heuristics + ESP32 Haptic Wristband)")
     print("=" * 65)
 
     test_frames_dir = Path(__file__).parent / "data" / "test_frames"
 
-    # Resolve source
+    # Resolve video/camera source
     if source_arg == "test_frames":
         source = test_frames_dir
         print(f">> Using test frames directory: {test_frames_dir}")
@@ -33,6 +66,33 @@ def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int =
 
     video_source = VideoSource(source=source, loop_file=True, target_fps=10.0)
     detector = ObstacleDetector(confidence_threshold=0.35, enable_heuristics=True)
+
+    # Initialize ESP32 Haptic Bridge
+    bridge = HapticBridge()
+    hardware_active = False
+
+    if haptic_port and haptic_port.lower() not in ("none", "disabled", "false"):
+        resolved_port = haptic_port
+        if resolved_port.lower() == "auto":
+            resolved_port = HapticBridge.find_wristband_port()
+
+        if resolved_port:
+            print(f">> Connecting to ESP32 Wristband on {resolved_port} @ {haptic_baud} baud...")
+            connected = bridge.connect(resolved_port, baudrate=haptic_baud)
+            if connected:
+                hardware_active = True
+                print(f">> [SUCCESS] ESP32 Haptic Wristband connected on {resolved_port}!")
+                # Give user a brief 200ms power-on confirmation pulse
+                bridge.send_raw("B,5,1\n")
+                time.sleep(0.3)
+                bridge.silence()
+            else:
+                print(f">> [WARNING] Could not connect to {resolved_port}. Is Arduino IDE Serial Monitor open?")
+                print(">> Continuing with visual simulation...")
+        else:
+            print(">> [NOTICE] No ESP32 serial port detected. Running in visual-only mode.")
+    else:
+        print(">> Haptic hardware output disabled by user.")
 
     win_name = "CampusEcho Perception Feed (Phase 2)"
     if not no_gui:
@@ -55,7 +115,13 @@ def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int =
             # Process frame through perception pipeline
             result = detector.process_frame(frame, debounce_frames=2)
 
+            # Dispatch haptic feedback to ESP32 Wristband
+            haptic_cmd = map_obstacle_to_haptic(result.primary_obstacle)
+            if hardware_active:
+                bridge.send_raw(haptic_cmd)
+
             # Print telemetry to terminal
+            haptic_tag = f" | Haptic: {haptic_cmd.strip():<5}" if hardware_active else ""
             hud_status = (
                 f"[HAZARD] {result.primary_obstacle.label.upper()} "
                 f"({result.primary_obstacle.distance_m}m, {result.primary_obstacle.urgency.upper()})"
@@ -65,8 +131,8 @@ def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int =
 
             print(
                 f"Frame {frame_idx:03d} | {hud_status:<40} | "
-                f"Latency: {result.processing_time_ms:4.1f}ms | FPS: {result.fps:4.1f} | "
-                f"Obstacles in Frame: {len(result.obstacles)}"
+                f"Latency: {result.processing_time_ms:4.1f}ms | FPS: {result.fps:4.1f}{haptic_tag} | "
+                f"Obstacles: {len(result.obstacles)}"
             )
 
             for obs in result.obstacles:
@@ -80,6 +146,16 @@ def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int =
             # Visual Display
             if not no_gui:
                 annotated = detector.annotate_frame(frame, result)
+                if hardware_active:
+                    cv2.putText(
+                        annotated,
+                        f"Haptic HW: {haptic_cmd.strip()}",
+                        (10, 85),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (0, 255, 255),
+                        2
+                    )
                 cv2.imshow(win_name, annotated)
 
                 key = cv2.waitKey(10) & 0xFF
@@ -100,6 +176,10 @@ def run_perception_demo(source_arg: str, no_gui: bool = False, max_frames: int =
                 break
 
     finally:
+        if hardware_active:
+            print("Silencing and closing ESP32 Haptic Bridge...")
+            bridge.silence()
+            bridge.close()
         video_source.release()
         if not no_gui:
             cv2.destroyAllWindows()
@@ -124,8 +204,26 @@ if __name__ == "__main__":
         "--max-frames",
         type=int,
         default=1000,
-        help="Maximum frames to process in demo (default: 100)"
+        help="Maximum frames to process in demo (default: 1000)"
+    )
+    parser.add_argument(
+        "--haptic-port",
+        type=str,
+        default="auto",
+        help="COM port for ESP32 wristband (default: 'auto', or 'COM8', 'none' to disable)"
+    )
+    parser.add_argument(
+        "--haptic-baud",
+        type=int,
+        default=115200,
+        help="Baud rate for ESP32 wristband (default: 115200)"
     )
     args = parser.parse_args()
 
-    run_perception_demo(source_arg=args.source, no_gui=args.no_gui, max_frames=args.max_frames)
+    run_perception_demo(
+        source_arg=args.source,
+        no_gui=args.no_gui,
+        max_frames=args.max_frames,
+        haptic_port=args.haptic_port,
+        haptic_baud=args.haptic_baud,
+    )

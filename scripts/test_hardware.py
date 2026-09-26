@@ -47,38 +47,45 @@ def main():
         for p in ports:
             print(f"  -> Found: {p['port']:<6} | {p['description']} | HWID: {p['hwid']}")
 
-    # 2. Resolve target port
-    target_port = args.port
-    if target_port.lower() == "auto":
-        target_port = HapticBridge.find_wristband_port()
-        print(f"\n[2] Auto-detecting ESP32 Wristband Port...")
-        if target_port:
-            print(f"  -> Target port resolved to: {target_port}")
-        else:
-            print("  -> Could not auto-resolve port. Available ports: ", [p['port'] for p in ports])
-            if ports:
-                target_port = ports[0]['port']
-                print(f"  -> Defaulting to first available port: {target_port}")
-            else:
-                sys.exit(1)
-    else:
-        print(f"\n[2] Using specified port: {target_port}")
-
-    # 3. Test port connection
-    print(f"\n[3] Connecting to {target_port} @ {args.baud} baud...")
+    # 2. Resolve target port and test connection
     bridge = HapticBridge()
-    success = bridge.connect(target_port, baudrate=args.baud)
+    success = False
 
-    if not success:
-        print(f"\n[FAILED] Could not connect to {target_port}!")
+    if args.port.lower() != "auto":
+        target_port = args.port
+        print(f"\n[2] Connecting to specified port {target_port} @ {args.baud} baud...")
+        success = bridge.connect(target_port, baudrate=args.baud)
+    else:
+        print(f"\n[2] Auto-detecting ESP32 Wristband Port (USB or Bluetooth)...")
+        # Try prioritized candidate first
+        candidate = HapticBridge.find_wristband_port()
+        ports_to_try = [candidate] if candidate else []
+        for p in ports:
+            if p['port'] not in ports_to_try:
+                ports_to_try.append(p['port'])
+
+        target_port = None
+        for pt in ports_to_try:
+            print(f"  -> Testing connection on {pt}...", end=" ", flush=True)
+            if bridge.connect(pt, baudrate=args.baud):
+                print("[CONNECTED]")
+                target_port = pt
+                success = True
+                break
+            else:
+                print("[FAILED / BUSY]")
+
+    if not success or not target_port:
+        print(f"\n[FAILED] Could not establish connection to the ESP32 wristband!")
         print("\nTroubleshooting Checks:")
-        print(" 1. Is Arduino IDE Serial Monitor open? If yes, CLOSE the Serial Monitor tab, as it locks the port.")
-        print(" 2. Is another terminal or application using this COM port?")
-        print(" 3. Try unplugging and re-plugging the USB cable.")
+        print(" 1. For USB: Is the USB cable securely connected and Arduino Serial Monitor closed?")
+        print(" 2. For Bluetooth: Have you paired 'CampusEcho-Wristband' in Windows Settings -> Bluetooth?")
+        print(" 3. For Bluetooth: Make sure the ESP32 is powered on (via battery or USB power bank).")
+        print(" 4. In Windows 'More Bluetooth settings' -> 'COM Ports', check which COM port is marked 'Outgoing'.")
         sys.exit(1)
 
-    print(f"  -> [SUCCESS] Connected to {target_port}!")
-    time.sleep(1.0)  # Allow ESP32 settle time
+    print(f"\n[3] Established active link on {target_port}!")
+    time.sleep(0.5)
 
     try:
         # 4. Interactive vibration tests

@@ -278,7 +278,7 @@ class HapticBridge:
         return ports
 
     @classmethod
-    def find_wristband_port(cls) -> Optional[str]:
+    def find_wristband_port(cls, probe: bool = True) -> Optional[str]:
         """
         Heuristically searches available COM ports for the CampusEcho wristband,
         Bluetooth Serial Port Profile devices, or standard ESP32 USB-UART bridges (CP210x, CH340).
@@ -294,24 +294,60 @@ class HapticBridge:
             if "campusecho" in desc or "campusecho" in hwid:
                 return p["port"]
 
-        # 2. Look for Bluetooth SPP port signatures
-        for p in ports:
-            desc = p["description"].lower()
-            if "bluetooth" in desc or "standard serial over bluetooth" in desc:
-                return p["port"]
+        # 2. Gather candidates
+        candidates = []
 
-        # 3. Look for standard ESP32 USB UART bridges (CP210x, CH340, FTDI)
+        # USB UART bridges first
         for p in ports:
             desc = p["description"].lower()
             hwid = p["hwid"].lower()
             if any(k in desc or k in hwid for k in ("cp210", "ch340", "ch341", "ftdi", "usb to uart", "usb-to-uart")):
-                return p["port"]
+                candidates.append(p["port"])
 
-        # 4. If exactly one COM port exists, assume it is the target device
-        if len(ports) == 1:
-            return ports[0]["port"]
+        # Bluetooth SPP ports
+        bt_ports = []
+        for p in ports:
+            desc = p["description"].lower()
+            if "bluetooth" in desc or "standard serial over bluetooth" in desc:
+                bt_ports.append(p["port"])
 
-        return None
+        # Sort Bluetooth ports descending by port number (e.g. COM9 before COM4)
+        def port_num(p_str):
+            nums = "".join(ch for ch in p_str if ch.isdigit())
+            return int(nums) if nums else 0
+
+        bt_ports.sort(key=port_num, reverse=True)
+
+        # Prioritize COM9 if present (established CampusEcho Bluetooth SPP port)
+        if "COM9" in bt_ports:
+            bt_ports.remove("COM9")
+            bt_ports.insert(0, "COM9")
+
+        candidates.extend(bt_ports)
+
+        if not candidates:
+            return ports[0]["port"] if len(ports) == 1 else None
+
+        if not probe or not SERIAL_AVAILABLE:
+            return candidates[0]
+
+        # Fast probe candidates to pick the one that successfully opens
+        for c_port in candidates:
+            try:
+                s = serial.Serial()
+                s.port = c_port
+                s.baudrate = 115200
+                s.timeout = 0.5
+                s.write_timeout = 0.5
+                s.dtr = False
+                s.rts = False
+                s.open()
+                s.close()
+                return c_port
+            except Exception:
+                continue
+
+        return candidates[0]
 
     # ── ModeRouter Callback ───────────────────────────────────────────────────
     def on_dispatch(self, result: DispatchResult) -> None:

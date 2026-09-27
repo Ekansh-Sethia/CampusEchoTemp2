@@ -327,7 +327,8 @@ class EnvironmentalHazardDetector:
                             trunk_boxes.append((roi_xmin + x, roi_ymin + y, roi_xmin + x + cw, roi_ymin + y + ch))
 
         # 3. Unified Assembly: Merge foliage and trunk, or process each individually
-        tree_regions: List[Tuple[int, int, int, int, Optional[int]]] = []  # (xmin, ymin, xmax, ymax, ground_y)
+        # tuple: (xmin, ymin, xmax, ymax, ground_y, has_foliage)
+        tree_regions: List[Tuple[int, int, int, int, Optional[int], bool]] = []
         used_trunks = set()
 
         for fx1, fy1, fx2, fy2 in foliage_boxes:
@@ -340,26 +341,37 @@ class EnvironmentalHazardDetector:
                     my1 = min(fy1, ty1)
                     mx2 = max(fx2, tx2)
                     my2 = max(fy2, ty2)
-                    tree_regions.append((mx1, my1, mx2, my2, my2))
+                    tree_regions.append((mx1, my1, mx2, my2, my2, True))
                     used_trunks.add(tidx)
                     merged = True
                     break
             if not merged:
-                # Foliage-only tree detection (e.g. canopy or low-hanging branches in corridor)
-                tree_regions.append((fx1, fy1, fx2, fy2, fy2))
+                # Foliage-only tree detection (e.g. low-hanging branch/canopy in corridor)
+                # Must be a substantial outdoor canopy hanging into walking space, not ceiling/awning
+                fw = fx2 - fx1
+                fh = fy2 - fy1
+                f_area = fw * fh
+                # Must hang down into walking space (fy2 >= 0.38*h) and not span entire ceiling (fw <= 0.88*w)
+                if f_area >= 6000 and fw >= int(w * 0.22) and fw <= int(w * 0.88) and fy2 >= int(h * 0.38) and fy1 >= int(h * 0.05):
+                    tree_regions.append((fx1, fy1, fx2, fy2, fy2, True))
 
         for tidx, (tx1, ty1, tx2, ty2) in enumerate(trunk_boxes):
             if tidx not in used_trunks:
                 # Check if already covered by an existing tree region
                 already_covered = any(
                     (rx1 <= tx1 and rx2 >= tx2 and ry1 <= ty1 and ry2 >= ty2)
-                    for rx1, ry1, rx2, ry2, _ in tree_regions
+                    for rx1, ry1, rx2, ry2, _, _ in tree_regions
                 )
                 if not already_covered:
-                    tree_regions.append((tx1, ty1, tx2, ty2, ty2))
+                    # Bare vertical rectangle without any foliage - likely furniture/column indoors
+                    tree_regions.append((tx1, ty1, tx2, ty2, ty2, False))
 
         # Convert tree regions to DetectedObstacle instances
-        for xmin, ymin, xmax, ymax, ground_y in tree_regions:
+        for xmin, ymin, xmax, ymax, ground_y, has_foliage in tree_regions:
+            # Reject bare vertical cylinders indoors when no foliage was observed
+            if not has_foliage:
+                continue
+
             bbox = (xmin, ymin, xmax, ymax)
             effective_radius = 0.30  # +0.3m padding for root zone / branch overhang
 
@@ -370,7 +382,7 @@ class EnvironmentalHazardDetector:
 
             trees.append(DetectedObstacle(
                 label="tree",
-                confidence=0.75,
+                confidence=0.80,
                 bbox=bbox,
                 bbox_normalized=(xmin / w, ymin / h, xmax / w, ymax / h),
                 distance_m=dist,
@@ -524,8 +536,13 @@ class EnvironmentalHazardDetector:
                 interior_roughness = float(np.var(interior_laplacian[pothole_mask_interior > 0]))
                 distortion_ratio = interior_roughness / floor_roughness
 
-                if distortion_ratio < 2.0:
+                if distortion_ratio < 2.4:
                     continue
+
+                interior_mean = float(np.mean(pothole_interior[pothole_mask_interior > 0]))
+                floor_mean = float(np.mean(floor_pixels))
+                if interior_mean > (floor_mean + 12.0):
+                    continue  # Bright decorative floor tiles or light fixtures are not pothole cavities
 
                 aspect_ratio = cw / float(ch) if ch > 0 else 0
                 if not (0.85 <= aspect_ratio <= 3.8):
@@ -542,7 +559,7 @@ class EnvironmentalHazardDetector:
                     frame, bbox, "pothole", raw_conf
                 )
 
-                if shd_score >= 0.75:
+                if shd_score >= 0.55:
                     continue
 
                 dist = self.distance_estimator.estimate_distance("pothole", bbox, h, w)

@@ -29,6 +29,13 @@ class TrackedObject:
         if len(self.history) > 10:
             self.history.pop(0)
 
+        # Smooth distance over recent frames to eliminate single-frame jitter
+        recent_dists = [h[3] for h in self.history[-5:]]
+        if len(recent_dists) >= 2:
+            smoothed_dist = round(float(np.median(recent_dists)), 2)
+            obstacle.distance_m = smoothed_dist
+
+
         # Calculate approach velocity (positive = approaching user, negative = moving away)
         if len(self.history) >= 2:
             t_old, _, _, dist_old = self.history[0]

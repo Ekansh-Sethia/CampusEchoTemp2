@@ -69,17 +69,20 @@ class DistanceEstimator:
         bbox_height = max(1, ymax - ymin)
         bbox_width = max(1, xmax - xmin)
 
-        scaled_focal_length = self.focal_length_px * (frame_height / 480.0)
+        # Standardize focal length scaling across landscape (640x480) and portrait (e.g. 576x1024)
+        # Using min(frame_width, frame_height) / 480.0 maintains true optical FOV scale
+        scale_ref = min(frame_width, frame_height) / 480.0
+        scaled_focal_length = self.focal_length_px * scale_ref
 
         # 1. Continuous perspective ground-plane projection (calibrated inverse-distance curve)
         ground_y = contact_y if contact_y is not None else ymax
         y_norm = max(0.0, min(1.0, ground_y / frame_height))
-        y_horizon = 0.36
+        y_horizon = 0.35
         if y_norm <= y_horizon:
-            dist_ground = 8.0
+            dist_ground = 7.5
         else:
             v = (y_norm - y_horizon) / (1.0 - y_horizon)
-            dist_ground = 0.60 + 1.25 * ((1.0 - v) / (v + 0.18))
+            dist_ground = 0.70 + 1.60 * ((1.0 - v) / (v + 0.22))
 
         conf = self._get_class_config(label)
         primary_dim = conf.get("primary_dimension", "height")
@@ -110,6 +113,12 @@ class DistanceEstimator:
         dist_height = (scaled_focal_length * eff_height) / bbox_height
         dist_width = (scaled_focal_length * real_width) / bbox_width
 
+        # Seated or occluded upright objects (e.g. seated person in cafe/classroom)
+        # Where visible height is truncated, dist_height can vastly overshoot reality.
+        # Anchor dist_height to ground-contact projection when overshooting significantly.
+        if norm_label == "person" and dist_height > 1.35 * dist_ground and dist_ground < 6.0:
+            dist_height = min(dist_height, dist_ground * 1.20)
+
         # Multi-cue continuous fusion based on class semantics and boundary reliability
         if norm_label == "unidentified":
             safety_factor = float(conf.get("safety_factor", 0.85))
@@ -134,9 +143,10 @@ class DistanceEstimator:
 
         else:
             # Height-dominant objects (person, chair, stair, backpack, etc.)
-            w_h = 0.50 * r_vert
-            w_w = 0.35 * r_horiz
-            w_g = 0.15
+            # Ground contact is physically stable when base rests on floor
+            w_h = 0.40 * r_vert
+            w_w = 0.20 * r_horiz
+            w_g = 0.40
             total_w = w_h + w_w + w_g
             estimated_dist = (w_h * dist_height + w_w * dist_width + w_g * dist_ground) / total_w
 
@@ -150,7 +160,7 @@ class DistanceEstimator:
         frame_height: int,
         distance_m: float,
         lane_margin_ratio: float = 0.25,
-        max_hazard_distance_m: float = 3.5,
+        max_hazard_distance_m: float = 3.6,
         effective_radius_m: float = 0.0
     ) -> Tuple[bool, str, str]:
         """
@@ -168,10 +178,11 @@ class DistanceEstimator:
         left_bound = frame_width * lane_margin_ratio - pixel_padding
         right_bound = frame_width * (1.0 - lane_margin_ratio) + pixel_padding
 
-        # Horizontal classification
-        if center_x < frame_width * 0.35:
+        # Horizontal classification: calibrated to avoid overly broad center dead-zone
+        norm_cx = center_x / max(1.0, float(frame_width))
+        if norm_cx < 0.44:
             h_pos = "left"
-        elif center_x > frame_width * 0.65:
+        elif norm_cx > 0.56:
             h_pos = "right"
         else:
             h_pos = "center"
@@ -187,10 +198,10 @@ class DistanceEstimator:
 
         in_walking_lane = bool(is_in_corridor and is_close_enough)
 
-        # Determine urgency
-        if distance_m <= 1.2 and in_walking_lane:
+        # Calibrated urgency tiers (extended alert reach for timely advance warning)
+        if distance_m <= 1.20 and in_walking_lane:
             urgency = "critical"
-        elif distance_m <= 2.2 and in_walking_lane:
+        elif distance_m <= 2.20 and in_walking_lane:
             urgency = "high"
         elif distance_m <= (max_hazard_distance_m + effective_radius_m) and in_walking_lane:
             urgency = "medium"
@@ -198,3 +209,54 @@ class DistanceEstimator:
             urgency = "low"
 
         return in_walking_lane, h_pos, urgency
+
+    @classmethod
+    def get_steering_direction(
+        cls,
+        h_pos: str,
+        in_walking_lane: bool,
+        urgency: str = "medium",
+        bbox: Optional[Tuple[int, int, int, int]] = None,
+        frame_width: Optional[int] = None
+    ) -> str:
+        """
+        Calculates the actionable steering guidance to avoid an obstacle:
+        - Obstacle on LEFT  -> user steers RIGHT ("right")
+        - Obstacle on RIGHT -> user steers LEFT ("left")
+        - Obstacle CENTER:
+            - If wide / wall / barrier (>=55% frame width) -> STOP / REROUTE ("center")
+            - Otherwise: steer towards side with greater clearance (right or left)
+        - Not in lane       -> continue straight ("straight")
+        """
+        if not in_walking_lane:
+            return "straight"
+        pos = (h_pos or "center").lower()
+        if pos == "left":
+            return "right"
+        elif pos == "right":
+            return "left"
+
+        # Obstacle is in center corridor: evaluate directional clearance
+        if bbox is not None and frame_width is not None and frame_width > 0:
+            xmin, _, xmax, _ = bbox
+            bw = xmax - xmin
+            # If the obstacle occupies >= 55% of the frame, both sides are blocked
+            if bw / float(frame_width) >= 0.55:
+                return "center"
+
+            left_clearance = xmin
+            right_clearance = frame_width - xmax
+            cx = (xmin + xmax) / 2.0
+            mid = frame_width / 2.0
+            if cx < (mid - 2.0):
+                # Obstacle is slightly left of midline -> steer RIGHT
+                return "right"
+            elif cx > (mid + 2.0):
+                # Obstacle is slightly right of midline -> steer LEFT
+                return "left"
+            else:
+                # Dead centered: steer toward side with larger lateral clearance
+                return "right" if right_clearance >= left_clearance else "left"
+
+        return "center"
+

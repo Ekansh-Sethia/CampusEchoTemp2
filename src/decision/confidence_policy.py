@@ -48,6 +48,8 @@ class PolicyDecision(BaseModel):
     reroute_triggered: bool = False
     escalation_triggered: bool = False
     decay_tau_s: float = 90.0
+    horizontal_position: str = "center"
+    steer_direction: str = "straight"
 
 
 class ConfidencePolicy:
@@ -73,11 +75,27 @@ class ConfidencePolicy:
         shadow = obstacle.shadow_likelihood
         in_lane = obstacle.in_walking_lane
         dist = obstacle.distance_m
+        h_pos = (obstacle.horizontal_position or "center").lower()
+
+        # Compute steering guidance direction:
+        # Obstacle on LEFT  -> move RIGHT
+        # Obstacle on RIGHT -> move LEFT
+        # Obstacle CENTER   -> stop / slow down
+        if not in_lane:
+            steer_dir = "straight"
+        elif getattr(obstacle, "steer_direction", None) in ("left", "right", "center", "stop"):
+            steer_dir = obstacle.steer_direction
+        elif h_pos == "left":
+            steer_dir = "right"
+        elif h_pos == "right":
+            steer_dir = "left"
+        else:
+            steer_dir = "center"
 
         # Determine decay tau for this class
         tau = DECAY_TAU_BY_CLASS.get(obstacle.label.lower(), DECAY_TAU_BY_CLASS["default"])
 
-        # Off-lane: cap tier at HEDGE regardless of confidence
+        # Off-lane: cap tier at HEDGE regardless of confidence (no steering evasion needed)
         if not in_lane:
             if effective_conf >= self.TIER1_THRESHOLD:
                 tier = ConfidenceTier.HEDGE
@@ -86,7 +104,6 @@ class ConfidencePolicy:
                     f"to your {obstacle.horizontal_position}. Proceed carefully."
                 )
             else:
-                # Below hedge threshold off-lane: low-priority note
                 tier = ConfidenceTier.HEDGE
                 instruction = (
                     f"Note: Possible {obstacle.label} {dist:.1f}m "
@@ -104,15 +121,20 @@ class ConfidencePolicy:
                 reroute_triggered=False,
                 escalation_triggered=False,
                 decay_tau_s=tau,
+                horizontal_position=h_pos,
+                steer_direction="straight",
             )
 
-        # In-lane evaluation
+        # In-lane evaluation with actionable directional guidance
         if effective_conf >= self.TIER1_THRESHOLD:
             tier = ConfidenceTier.BLOCKED
-            instruction = (
-                f"Warning! {obstacle.label} blocking path {dist:.1f} meters ahead. "
-                f"Rerouting now."
-            )
+            if steer_dir == "right":
+                instruction = f"Warning! {obstacle.label} on left {dist:.1f} meters ahead. Move right."
+            elif steer_dir == "left":
+                instruction = f"Warning! {obstacle.label} on right {dist:.1f} meters ahead. Move left."
+            else:
+                instruction = f"Warning! {obstacle.label} blocking path {dist:.1f} meters ahead. Rerouting now."
+
             return PolicyDecision(
                 tier=tier,
                 obstacle_label=obstacle.label,
@@ -125,14 +147,19 @@ class ConfidencePolicy:
                 reroute_triggered=True,
                 escalation_triggered=False,
                 decay_tau_s=tau,
+                horizontal_position=h_pos,
+                steer_direction=steer_dir,
             )
 
         elif effective_conf >= self.TIER2_THRESHOLD:
             tier = ConfidenceTier.HEDGE
-            instruction = (
-                f"Caution: possible {obstacle.label} {dist:.1f} meters ahead. "
-                f"Slow down and proceed carefully."
-            )
+            if steer_dir == "right":
+                instruction = f"Caution: {obstacle.label} on left {dist:.1f} meters ahead. Move right."
+            elif steer_dir == "left":
+                instruction = f"Caution: {obstacle.label} on right {dist:.1f} meters ahead. Move left."
+            else:
+                instruction = f"Caution: possible {obstacle.label} {dist:.1f} meters ahead. Slow down and proceed carefully."
+
             return PolicyDecision(
                 tier=tier,
                 obstacle_label=obstacle.label,
@@ -145,6 +172,8 @@ class ConfidencePolicy:
                 reroute_triggered=False,
                 escalation_triggered=False,
                 decay_tau_s=tau,
+                horizontal_position=h_pos,
+                steer_direction=steer_dir,
             )
 
         else:
@@ -166,4 +195,7 @@ class ConfidencePolicy:
                 reroute_triggered=False,
                 escalation_triggered=True,
                 decay_tau_s=tau,
+                horizontal_position=h_pos,
+                steer_direction=steer_dir,
             )
+

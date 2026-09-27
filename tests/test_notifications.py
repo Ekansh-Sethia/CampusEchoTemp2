@@ -188,3 +188,51 @@ class TestModeRouter:
         assert router.voice._speaker is None
         router.close()
 
+    def test_encode_alert_with_directional_steering(self):
+        # Steer right (obstacle on left)
+        assert HapticEncoder.encode_alert(ConfidenceTier.BLOCKED, steer_direction="right") == "R9P2"
+        assert HapticEncoder.encode_alert(ConfidenceTier.HEDGE, steer_direction="right") == "R7P2"
+
+        # Steer left (obstacle on right)
+        assert HapticEncoder.encode_alert(ConfidenceTier.BLOCKED, steer_direction="left") == "L9P2"
+        assert HapticEncoder.encode_alert(ConfidenceTier.HEDGE, steer_direction="left") == "L7P2"
+
+        # Center / no steer
+        assert HapticEncoder.encode_alert(ConfidenceTier.BLOCKED, steer_direction="center") == "B9P3"
+
+    def test_mode_router_directional_steering_dispatch(self):
+        router = self.router_with_callback(OutputMode.DUAL)
+        dec_right = PolicyDecision(
+            tier=ConfidenceTier.HEDGE,
+            obstacle_label="chair",
+            effective_confidence=0.65,
+            raw_confidence=0.65,
+            shadow_likelihood=0.0,
+            in_walking_lane=True,
+            distance_m=1.5,
+            spoken_instruction="Caution: chair on left 1.5 meters ahead. Move right.",
+            steer_direction="right",
+            horizontal_position="left",
+        )
+        res = router.handle_decision(dec_right)
+        assert res.haptic_cmd == "R7P2"
+
+    def test_mode_router_off_lane_haptic_suppressed(self):
+        router = self.router_with_callback(OutputMode.DUAL)
+        dec_offlane = PolicyDecision(
+            tier=ConfidenceTier.HEDGE,
+            obstacle_label="chair",
+            effective_confidence=0.65,
+            raw_confidence=0.65,
+            shadow_likelihood=0.0,
+            in_walking_lane=False,  # Not in walking lane
+            distance_m=2.0,
+            spoken_instruction="Note: chair 2.0m to your right.",
+            steer_direction="straight",
+            horizontal_position="right",
+        )
+        res = router.handle_decision(dec_offlane)
+        # Haptic must be completely suppressed for off-lane obstacles
+        assert res.haptic_cmd is None
+
+

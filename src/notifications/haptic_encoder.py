@@ -90,13 +90,21 @@ class HapticEncoder:
 
     # ── Alert commands ────────────────────────────────────────────────────────
     @staticmethod
-    def encode_alert(tier: ConfidenceTier) -> str:
+    def encode_alert(tier: ConfidenceTier, steer_direction: Optional[str] = None) -> str:
         """
-        Returns a haptic alert command based on the confidence decision tier.
-        BLOCKED   → strong rapid burst (urgent stop/reroute)
-        HEDGE     → medium double-tap (caution)
-        ESCALATE  → max-strength SOS (stop, help requested)
+        Returns a haptic alert command based on the confidence decision tier and optional steer guidance.
+        - steer_direction == 'right' (obstacle on left)  -> Right motor pulses (prompting move right)
+        - steer_direction == 'left' (obstacle on right)  -> Left motor pulses (prompting move left)
+        - steer_direction in ('center', 'stop', None)    -> Both motors alert
         """
+        steer = (steer_direction or "").strip().lower()
+        if steer == "right":
+            intensity = 9 if tier == ConfidenceTier.BLOCKED else 7
+            return f"R{intensity}P2"
+        elif steer == "left":
+            intensity = 9 if tier == ConfidenceTier.BLOCKED else 7
+            return f"L{intensity}P2"
+
         if tier == ConfidenceTier.BLOCKED:
             return "B9P3"   # Both, max-minus-one, rapid burst
         elif tier == ConfidenceTier.HEDGE:

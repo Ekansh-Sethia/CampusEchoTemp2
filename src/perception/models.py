@@ -23,6 +23,8 @@ class DetectedObstacle(BaseModel):
     ground_contact_y: Optional[int] = None       # Pixel y-coordinate of ground contact line
     shadow_likelihood: float = 0.0               # Likelihood that detection is a lighting artifact [0.0 - 1.0]
     raw_confidence: float = 0.0                  # Confidence before shadow penalty recalibration
+    steer_direction: str = "straight"            # Directional steering guidance: "left", "right", "center", "straight"
+
 
 
 class FramePerceptionResult(BaseModel):

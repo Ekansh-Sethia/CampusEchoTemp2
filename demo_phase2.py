@@ -24,15 +24,17 @@ def run_perception_demo(
     max_frames: int = 1000,
     haptic_port: str = "auto",
     haptic_baud: int = 115200,
-    cadence: int = 5,
+    cadence: int = 2,
     target_fps: float = 12.0,
     enable_voice: bool = True,
     speech_rate: int = 2,
     mode_str: str = "DUAL",
+    model_name: str = "yolov8n.pt",
+    max_alert_dist: float = 3.6,
 ):
     print("=" * 70)
     print("  CampusEcho - Perception Engine & Spoken Audio Narrator Demo")
-    print("  (YOLOv8l + Heuristics + Voice TTS + ESP32 Haptic Wristband)")
+    print(f"  ({model_name} + Heuristics + Voice TTS + ESP32 Haptic Wristband)")
     print("=" * 70)
 
     test_frames_dir = Path(__file__).parent / "data" / "test_frames"
@@ -50,13 +52,13 @@ def run_perception_demo(
 
     video_source = VideoSource(source=source, loop_file=True, target_fps=target_fps)
     detector = ObstacleDetector(
-        model_name="yolov8l.pt",
-        confidence_threshold=0.65,          # High-confidence threshold (0.6-0.7) to suppress noisy false vibrations
-        alert_confidence_threshold=0.65,    # Secondary gate before haptic/audio alert
-        max_alert_distance_m=4.0,           # Don't alert on obstacles beyond 4 m
-        stability_required_sec=2.0,         # Static obstacles must persist 2 s before alerting
+        model_name=model_name,
+        confidence_threshold=0.45,          # Balanced confidence gate to detect hazards early
+        alert_confidence_threshold=0.50,    # Secondary gate before haptic/audio alert
+        max_alert_distance_m=max_alert_dist,# Calibrated alert distance threshold (default 3.6m)
+        stability_required_sec=0.3,         # Responsive 0.3s debouncing for fast hazard warning
         enable_heuristics=True,
-        inference_cadence=cadence           # Multi-rate perception: keyframe every N frames for 10-12 FPS
+        inference_cadence=cadence           # Multi-rate perception: keyframe every N frames
     )
 
     # Initialize Decision Policy & ModeRouter (Phase 4 & 6)
@@ -75,26 +77,39 @@ def run_perception_demo(
     # Initialize ESP32 Haptic Bridge
     bridge = HapticBridge()
     hardware_active = False
+    resolved_port = "None"
 
     if haptic_port and haptic_port.lower() not in ("none", "disabled", "false"):
         resolved_port = haptic_port
         if resolved_port.lower() == "auto":
-            resolved_port = HapticBridge.find_wristband_port()
+            resolved_port = HapticBridge.find_wristband_port() or "COM8"
 
         if resolved_port:
             print(f">> Connecting to ESP32 Wristband on {resolved_port} @ {haptic_baud} baud...")
-            connected = bridge.connect(resolved_port, baudrate=haptic_baud)
+            connected = bridge.connect(resolved_port, baudrate=haptic_baud, retries=3, retry_delay=0.8)
+            if not connected:
+                # Attempt auto-fallback to alternative candidate ports on the machine
+                ports = HapticBridge.list_ports()
+                candidate_ports = [p["port"] for p in ports if p["port"].upper() != resolved_port.upper()]
+                for alt_port in candidate_ports:
+                    print(f">> [FALLBACK] Could not open {resolved_port}. Attempting fallback to {alt_port}...")
+                    if bridge.connect(alt_port, baudrate=haptic_baud, retries=2, retry_delay=0.5):
+                        connected = True
+                        resolved_port = alt_port
+                        break
+
             if connected:
                 hardware_active = True
                 print(f">> [SUCCESS] ESP32 Haptic Wristband connected on {resolved_port}!")
+                # Immediate tactile greeting so user verifies hardware connection
                 bridge.send_raw("B,5,1\n")
                 time.sleep(0.3)
                 bridge.silence()
             else:
-                print(f">> [WARNING] Could not connect to {resolved_port}. Is Arduino IDE Serial Monitor open?")
-                print(">> Continuing with visual simulation...")
+                print(f">> [WARNING] Could not connect to {resolved_port} or fallback ports.")
+                print(">> Continuing with visual simulation (simulated haptic & direction signals active)...")
         else:
-            print(">> [NOTICE] No ESP32 serial port detected. Running in visual-only mode.")
+            print(">> [NOTICE] No ESP32 serial port detected. Running in visual simulation mode.")
     else:
         print(">> Haptic hardware output disabled by user.")
 
@@ -115,6 +130,9 @@ def run_perception_demo(
     current_spoken_banner = "Path is safe"
     current_tier_label = "CLEAR"
     current_tier_color = (0, 255, 0)  # Green
+    last_haptic_cmd = "O,0,0\n"
+    last_haptic_send_time = 0.0
+    current_steer_dir = "straight"
 
     try:
         for frame in video_source.stream():
@@ -124,8 +142,10 @@ def run_perception_demo(
             result = detector.process_frame(frame, debounce_frames=2)
 
             haptic_cmd = "O,0,0\n"
+            current_steer_dir = "straight"
 
             if result.primary_obstacle:
+                current_steer_dir = getattr(result.primary_obstacle, "steer_direction", "center")
                 # Evaluate Confidence Policy (Phase 4)
                 decision = policy.evaluate(result.primary_obstacle)
                 dispatch_res = mode_router.handle_decision(decision)
@@ -145,6 +165,8 @@ def run_perception_demo(
 
                 had_previous_obstacle = True
             else:
+                haptic_cmd = "O,0,0\n"
+                current_steer_dir = "straight"
                 if had_previous_obstacle:
                     if enable_voice and active_mode in (OutputMode.VOICE_ONLY, OutputMode.DUAL):
                         mode_router.voice.speak("Path clear.", priority="low")
@@ -156,22 +178,44 @@ def run_perception_demo(
                 current_tier_label = "CLEAR"
                 current_tier_color = (0, 255, 0)  # Green
 
-            # Dispatch haptic feedback to ESP32 Wristband if active
-            if hardware_active and haptic_cmd != "O,0,0\n":
-                bridge.send_raw(haptic_cmd)
+            # Dispatch haptic feedback to ESP32 Wristband (or simulator) with deduplication & heartbeat
+            now_t = time.time()
+            if hardware_active:
+                if haptic_cmd != last_haptic_cmd:
+                    if haptic_cmd == "O,0,0\n":
+                        bridge.silence()
+                        print(f"   [HAPTIC TX: {resolved_port}] -> SILENCE (O,0,0)")
+                    else:
+                        bridge.send_raw(haptic_cmd)
+                        steer_label = f"STEER {current_steer_dir.upper()}" if current_steer_dir != "straight" else "ALERT"
+                        print(f"   [HAPTIC TX: {resolved_port}] -> {haptic_cmd.strip()} | {steer_label}")
+                    last_haptic_cmd = haptic_cmd
+                    last_haptic_send_time = now_t
+                elif haptic_cmd != "O,0,0\n" and (now_t - last_haptic_send_time) >= 1.2:
+                    # Heartbeat: maintain active vibration pattern without flooding serial buffer
+                    bridge.send_raw(haptic_cmd)
+                    last_haptic_send_time = now_t
+            else:
+                # Simulated hardware output
+                if haptic_cmd != last_haptic_cmd:
+                    if haptic_cmd != "O,0,0\n":
+                        steer_label = f"STEER {current_steer_dir.upper()}" if current_steer_dir != "straight" else "ALERT"
+                        print(f"   [SIM HAPTIC] -> {haptic_cmd.strip()} | {steer_label}")
+                    last_haptic_cmd = haptic_cmd
 
             # Print telemetry to terminal
-            haptic_tag = f" | Haptic: {haptic_cmd.strip():<5}" if hardware_active else ""
+            haptic_tag = f" | Haptic: {haptic_cmd.strip():<5}" if hardware_active else f" | SimHaptic: {haptic_cmd.strip():<5}"
             voice_tag = f" | Voice: \"{current_spoken_banner}\"" if enable_voice else ""
+            steer_tag = f" | Steer: {current_steer_dir.upper():<8}"
             hud_status = (
                 f"[{current_tier_label}] {result.primary_obstacle.label.upper()} "
-                f"({result.primary_obstacle.distance_m}m, {result.primary_obstacle.urgency.upper()})"
+                f"({result.primary_obstacle.distance_m}m, {result.primary_obstacle.horizontal_position.upper()})"
                 if result.primary_obstacle
                 else "[CLEAR] Path is safe"
             )
 
             print(
-                f"Frame {frame_idx:03d} | {hud_status:<38} | "
+                f"Frame {frame_idx:03d} | {hud_status:<36}{steer_tag} | "
                 f"Latency: {result.processing_time_ms:4.1f}ms | FPS: {result.fps:4.1f}{haptic_tag}{voice_tag}"
             )
 
@@ -181,10 +225,17 @@ def run_perception_demo(
                 h, w = annotated.shape[:2]
 
                 # Top Telemetry Badges
-                hw_str = f"ESP32: {haptic_cmd.strip()}" if hardware_active else "ESP32: Off"
+                hw_str = f"ESP32 [{resolved_port}]: {haptic_cmd.strip()}" if hardware_active else f"SIM HW: {haptic_cmd.strip()}"
                 voice_status = f"Voice: ON [{speech_rate}]" if enable_voice else "Voice: OFF"
-                top_badge_text = f"FPS: {result.fps:4.1f} | Latency: {result.processing_time_ms:3.0f}ms | Cadence: {cadence} | {hw_str} | {voice_status}"
-                cv2.putText(annotated, top_badge_text, (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 0), 1)
+                steer_badge = f" | STEER: {current_steer_dir.upper()}" if current_steer_dir != "straight" else " | STEER: NONE"
+                top_badge_text = f"FPS: {result.fps:4.1f} | Latency: {result.processing_time_ms:3.0f}ms | Cadence: {cadence}{steer_badge} | {hw_str} | {voice_status}"
+                cv2.putText(annotated, top_badge_text, (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.44, (255, 255, 0), 1)
+
+                # Prominent Steering Arrow overlay if active
+                if current_steer_dir == "right":
+                    cv2.putText(annotated, ">> MOVE RIGHT >>", (int(w * 0.28), 135), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 165, 255), 2)
+                elif current_steer_dir == "left":
+                    cv2.putText(annotated, "<< MOVE LEFT <<", (int(w * 0.28), 135), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 165, 255), 2)
 
                 # Bottom Voice Narration Subtitle Banner
                 banner_y1 = h - 55
@@ -277,8 +328,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--cadence",
         type=int,
-        default=5,
-        help="Inference cadence: run full YOLO every N frames for 10-12 FPS (default: 5)"
+        default=2,
+        help="Inference cadence: run full YOLO every N frames for rapid responsiveness (default: 2)"
     )
     parser.add_argument(
         "--target-fps",
@@ -312,6 +363,18 @@ if __name__ == "__main__":
         choices=["DUAL", "VOICE_ONLY", "HAPTIC_ONLY"],
         help="Output mode: DUAL, VOICE_ONLY, or HAPTIC_ONLY (default: DUAL)"
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="yolov8n.pt",
+        help="YOLO model weights to use (default: yolov8n.pt for fast, stable CPU inference)"
+    )
+    parser.add_argument(
+        "--max-dist",
+        type=float,
+        default=3.6,
+        help="Maximum distance threshold for alerts in meters (default: 3.6m)"
+    )
     args = parser.parse_args()
 
     run_perception_demo(
@@ -325,4 +388,6 @@ if __name__ == "__main__":
         enable_voice=args.enable_voice,
         speech_rate=args.speech_rate,
         mode_str=args.mode,
+        model_name=args.model,
+        max_alert_dist=args.max_dist,
     )

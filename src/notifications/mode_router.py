@@ -90,24 +90,32 @@ class ModeRouter:
         voice_text: Optional[str] = None
         haptic_cmd: Optional[str] = None
 
+        steer_dir = getattr(decision, "steer_direction", "center")
+        in_lane = getattr(decision, "in_walking_lane", True)
+
         if decision.tier == ConfidenceTier.BLOCKED:
-            haptic_cmd = self.haptic.encode_alert(ConfidenceTier.BLOCKED)
+            haptic_cmd = self.haptic.encode_alert(ConfidenceTier.BLOCKED, steer_direction=steer_dir)
             if self.mode in (OutputMode.VOICE_ONLY, OutputMode.DUAL):
                 self.voice.speak_urgent(decision.spoken_instruction)
                 voice_text = decision.spoken_instruction
             if self.mode in (OutputMode.HAPTIC_ONLY, OutputMode.DUAL):
-                haptic_cmd = haptic_cmd  # already set
+                haptic_cmd = haptic_cmd
 
         elif decision.tier == ConfidenceTier.HEDGE:
-            haptic_cmd = self.haptic.encode_alert(ConfidenceTier.HEDGE)
+            # If obstacle is off-lane, do not trigger haptic vibration
+            if not in_lane:
+                haptic_cmd = None
+            else:
+                haptic_cmd = self.haptic.encode_alert(ConfidenceTier.HEDGE, steer_direction=steer_dir)
+
             if self.mode in (OutputMode.VOICE_ONLY, OutputMode.DUAL):
                 queued = self.voice.speak(decision.spoken_instruction, priority="normal")
                 voice_text = decision.spoken_instruction if queued else None
             if self.mode == OutputMode.VOICE_ONLY:
-                haptic_cmd = None  # suppress haptic
+                haptic_cmd = None
 
         elif decision.tier == ConfidenceTier.ESCALATE:
-            haptic_cmd = self.haptic.encode_alert(ConfidenceTier.ESCALATE)
+            haptic_cmd = self.haptic.encode_alert(ConfidenceTier.ESCALATE, steer_direction="center")
             if self.mode in (OutputMode.VOICE_ONLY, OutputMode.DUAL):
                 self.voice.speak_urgent(decision.spoken_instruction)
                 voice_text = decision.spoken_instruction

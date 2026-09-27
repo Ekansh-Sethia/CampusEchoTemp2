@@ -54,15 +54,15 @@ class ObstacleDetector:
 
     def __init__(
         self,
-        model_name: str = "yolov8l.pt",
-        confidence_threshold: float = 0.65,          # Upgraded to YOLOv8l with 0.65 high-confidence gate
+        model_name: str = "yolov8n.pt",
+        confidence_threshold: float = 0.45,
         target_classes: Optional[Set[str]] = None,
         focal_length_px: float = 650.0,
         enable_heuristics: bool = True,
-        max_alert_distance_m: float = 4.0,           # Beyond this: track silently, no alert
-        alert_confidence_threshold: float = 0.65,    # High confidence gate before alerting (0.6-0.7)
-        stability_required_sec: float = 2.0,         # Static/parked must persist ≥N s
-        inference_cadence: int = 1                   # Run full YOLO/hazards every N frames (cadence ≥ 4 for 10-12 FPS)
+        max_alert_distance_m: float = 3.6,           # Tuned for timely advance warning (3-4s warning buffer)
+        alert_confidence_threshold: float = 0.50,    # Confidence gate before alert (0.50)
+        stability_required_sec: float = 0.3,         # Responsive debouncing (0.3s) without delaying critical alerts
+        inference_cadence: int = 2                   # Run full YOLO/hazards every 2 frames for rapid responsiveness
     ):
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
@@ -188,11 +188,14 @@ class ObstacleDetector:
                             label, bbox, h, w, contact_y=contact_y
                         )
                         in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
-                            bbox, w, h, dist
+                            bbox, w, h, dist, max_hazard_distance_m=self.max_alert_distance_m
                         )
 
                         current_labels_seen.add(label)
 
+                        steer_dir = self.distance_estimator.get_steering_direction(
+                            h_pos, in_lane, urgency, bbox=bbox, frame_width=w
+                        )
                         detected_obstacles.append(DetectedObstacle(
                             label=label,
                             confidence=round(conf, 2),
@@ -201,6 +204,7 @@ class ObstacleDetector:
                             distance_m=dist,
                             in_walking_lane=in_lane,
                             horizontal_position=h_pos,
+                            steer_direction=steer_dir,
                             urgency=urgency,
                             is_environmental_hazard=False,
                             detection_source="yolo",
@@ -213,6 +217,10 @@ class ObstacleDetector:
                         frame, excluded_obstacles=detected_obstacles
                     )
                     for hazard in env_hazards:
+                        hazard.steer_direction = self.distance_estimator.get_steering_direction(
+                            hazard.horizontal_position, hazard.in_walking_lane, hazard.urgency,
+                            bbox=hazard.bbox, frame_width=w
+                        )
                         current_labels_seen.add(hazard.label)
                         detected_obstacles.append(hazard)
 
@@ -236,19 +244,29 @@ class ObstacleDetector:
                 detected_obstacles = []
                 for obs in self._cached_detected_obstacles:
                     in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
-                        obs.bbox, w, h, obs.distance_m
+                        obs.bbox, w, h, obs.distance_m, max_hazard_distance_m=self.max_alert_distance_m
+                    )
+                    steer_dir = self.distance_estimator.get_steering_direction(
+                        h_pos, in_lane, urgency, bbox=obs.bbox, frame_width=w
                     )
                     current_labels_seen.add(obs.label)
                     detected_obstacles.append(
                         obs.model_copy(update={
                             "in_walking_lane": in_lane,
                             "horizontal_position": h_pos,
+                            "steer_direction": steer_dir,
                             "urgency": urgency
                         })
                     )
 
             # 4. Kinematic Tracking across frames (velocity, moving vs parked state)
             self.tracker.update(detected_obstacles, timestamp=now_ts)
+            for obs in detected_obstacles:
+                obs.steer_direction = self.distance_estimator.get_steering_direction(
+                    obs.horizontal_position, obs.in_walking_lane, obs.urgency,
+                    bbox=obs.bbox, frame_width=w
+                )
+
 
             # 5. Temporal Debounce / Hysteresis (frame counter)
             for lbl in current_labels_seen:

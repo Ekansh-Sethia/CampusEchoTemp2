@@ -138,9 +138,10 @@ class HapticBridge:
         return "O,0,0\n"
 
     # ── Connection Management ─────────────────────────────────────────────────
-    def connect(self, port: str, baudrate: int = 115200) -> bool:
+    def connect(self, port: str, baudrate: int = 115200, retries: int = 3, retry_delay: float = 0.8) -> bool:
         """
-        Connects to the specified COM port.
+        Connects to the specified COM port with automatic retry handling for Windows
+        Bluetooth SPP virtual ports (e.g. semaphore timeout 121 / port busy).
         Returns True if successful, False otherwise.
         """
         if not SERIAL_AVAILABLE:
@@ -148,29 +149,34 @@ class HapticBridge:
             return False
 
         with self._lock:
-            # Close existing connection if any
             self._close_internal()
             self.port = port
             self.baudrate = baudrate
 
-            try:
-                self.serial_conn = serial.Serial()
-                self.serial_conn.port = port
-                self.serial_conn.baudrate = baudrate
-                self.serial_conn.timeout = 1.0
-                self.serial_conn.write_timeout = 1.0
-                self.serial_conn.dtr = False
-                self.serial_conn.rts = False
-                self.serial_conn.open()
-                self._connected = True
-                logger.info(f"[HapticBridge] Connected to ESP32 on {port} @ {baudrate} baud.")
-                return True
-            except Exception as e:
-                self._connected = False
-                self.serial_conn = None
-                self.error_count += 1
-                logger.warning(f"[HapticBridge] Failed to connect to {port}: {e}")
-                return False
+            for attempt in range(1, max(1, retries) + 1):
+                try:
+                    conn = serial.Serial()
+                    conn.port = port
+                    conn.baudrate = baudrate
+                    conn.timeout = 1.0
+                    conn.write_timeout = 1.0
+                    conn.dtr = False
+                    conn.rts = False
+                    conn.open()
+                    self.serial_conn = conn
+                    self._connected = True
+                    logger.info(f"[HapticBridge] Connected to ESP32 on {port} @ {baudrate} baud (attempt {attempt}).")
+                    return True
+                except Exception as e:
+                    self._close_internal()
+                    if attempt < retries:
+                        logger.info(f"[HapticBridge] Attempt {attempt} failed to open {port} ({e}). Retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                    else:
+                        self.error_count += 1
+                        logger.warning(f"[HapticBridge] Failed to connect to {port} after {retries} attempts: {e}")
+                        return False
+            return False
 
     def disconnect(self) -> None:
         """Sends all-off and safely closes the serial port."""
@@ -183,7 +189,14 @@ class HapticBridge:
             logger.info("[HapticBridge] Disconnected from ESP32.")
 
     def silence(self) -> None:
-        """Forces both motors off immediately."""
+        """Forces both motors off immediately and clears any pending queued commands."""
+        # Drain queue first so silence is instantaneous and not buffered
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+                self._queue.task_done()
+            except Exception:
+                break
         self.send_raw("O,0,0\n")
 
     def _close_internal(self) -> None:

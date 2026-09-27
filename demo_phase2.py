@@ -1,10 +1,11 @@
-"""Interactive CLI & Visual Demo for Phase 2: CampusEcho Perception Loop."""
+"""Interactive CLI & Visual Demo for Phase 2 & Phase 6: CampusEcho Perception & Voice Narration Loop."""
 import argparse
 import sys
 import time
 from pathlib import Path
 from typing import Optional
 import cv2
+import numpy as np
 
 # Add project root to sys.path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -13,30 +14,8 @@ from src.perception.detector import ObstacleDetector
 from src.perception.models import DetectedObstacle
 from src.perception.video_source import VideoSource
 from src.notifications.haptic_bridge import HapticBridge
-
-
-def map_obstacle_to_haptic(obstacle: Optional[DetectedObstacle]) -> str:
-    """Maps a detected primary obstacle to an ESP32 firmware CSV vibration command."""
-    if not obstacle or not obstacle.in_walking_lane:
-        return "O,0,0\n"
-
-    # Determine motor side
-    pos = (obstacle.horizontal_position or "center").lower()
-    if pos == "left":
-        side = "L"
-    elif pos == "right":
-        side = "R"
-    else:
-        side = "B"
-
-    # Determine intensity and pattern based on urgency
-    urgency = (obstacle.urgency or "low").lower()
-    if urgency == "critical":
-        return f"{side},9,2\n"  # Max strength, rapid pulse
-    elif urgency == "high":
-        return f"{side},7,3\n"  # Strong strength, double-pulse
-    else:
-        return f"{side},5,1\n"  # Medium strength, slow pulse
+from src.decision.confidence_policy import ConfidencePolicy, ConfidenceTier, PolicyDecision
+from src.notifications.mode_router import ModeRouter, OutputMode
 
 
 def run_perception_demo(
@@ -45,11 +24,16 @@ def run_perception_demo(
     max_frames: int = 1000,
     haptic_port: str = "auto",
     haptic_baud: int = 115200,
+    cadence: int = 5,
+    target_fps: float = 12.0,
+    enable_voice: bool = True,
+    speech_rate: int = 2,
+    mode_str: str = "DUAL",
 ):
-    print("=" * 65)
-    print("  CampusEcho - Phase 2 Perception Engine Demo")
-    print("  (YOLOv8 + Hazard Heuristics + ESP32 Haptic Wristband)")
-    print("=" * 65)
+    print("=" * 70)
+    print("  CampusEcho - Perception Engine & Spoken Audio Narrator Demo")
+    print("  (YOLOv8l + Heuristics + Voice TTS + ESP32 Haptic Wristband)")
+    print("=" * 70)
 
     test_frames_dir = Path(__file__).parent / "data" / "test_frames"
 
@@ -64,14 +48,29 @@ def run_perception_demo(
         source = Path(source_arg)
         print(f">> Using video file / image source: {source}")
 
-    video_source = VideoSource(source=source, loop_file=True, target_fps=10.0)
+    video_source = VideoSource(source=source, loop_file=True, target_fps=target_fps)
     detector = ObstacleDetector(
-        confidence_threshold=0.45,          # Hardened from 0.35
-        alert_confidence_threshold=0.55,    # Secondary gate before haptic/audio alert
+        model_name="yolov8l.pt",
+        confidence_threshold=0.65,          # High-confidence threshold (0.6-0.7) to suppress noisy false vibrations
+        alert_confidence_threshold=0.65,    # Secondary gate before haptic/audio alert
         max_alert_distance_m=4.0,           # Don't alert on obstacles beyond 4 m
         stability_required_sec=2.0,         # Static obstacles must persist 2 s before alerting
-        enable_heuristics=True
+        enable_heuristics=True,
+        inference_cadence=cadence           # Multi-rate perception: keyframe every N frames for 10-12 FPS
     )
+
+    # Initialize Decision Policy & ModeRouter (Phase 4 & 6)
+    policy = ConfidencePolicy()
+    active_mode = OutputMode[mode_str.upper()] if mode_str.upper() in OutputMode.__members__ else OutputMode.DUAL
+    mode_router = ModeRouter(mode=active_mode)
+
+    if enable_voice:
+        print(f">> Initializing native desktop voice narrator (Rate: {speech_rate}, Mode: {active_mode.value})...")
+        mode_router.enable_local_audio(enabled=True, speech_rate=speech_rate)
+        # Greet user with startup confirmation audio
+        mode_router.voice.speak("CampusEcho perception voice active.", priority="normal")
+    else:
+        print(">> Spoken audio output disabled by user.")
 
     # Initialize ESP32 Haptic Bridge
     bridge = HapticBridge()
@@ -88,7 +87,6 @@ def run_perception_demo(
             if connected:
                 hardware_active = True
                 print(f">> [SUCCESS] ESP32 Haptic Wristband connected on {resolved_port}!")
-                # Give user a brief 200ms power-on confirmation pulse
                 bridge.send_raw("B,5,1\n")
                 time.sleep(0.3)
                 bridge.silence()
@@ -100,68 +98,120 @@ def run_perception_demo(
     else:
         print(">> Haptic hardware output disabled by user.")
 
-    win_name = "CampusEcho Perception Feed (Phase 2)"
+    win_name = "CampusEcho Perception & Voice Feed"
     if not no_gui:
         cv2.namedWindow(win_name, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(win_name, 800, 600)
-        # Force window to stay visible on top of IDE/terminal
         try:
             cv2.setWindowProperty(win_name, cv2.WND_PROP_TOPMOST, 1)
         except Exception:
             pass
 
-    print("\nStarting perception loop...")
+    print(f"\nStarting perception loop (Target: {target_fps:.0f} FPS, Cadence: {cadence})...")
     print("Press 'q' in the OpenCV window or close it to exit.\n")
 
     frame_idx = 0
+    had_previous_obstacle = False
+    current_spoken_banner = "Path is safe"
+    current_tier_label = "CLEAR"
+    current_tier_color = (0, 255, 0)  # Green
+
     try:
         for frame in video_source.stream():
             frame_idx += 1
 
-            # Process frame through perception pipeline
+            # Process frame through perception pipeline (with inference cadence for 10-12 FPS)
             result = detector.process_frame(frame, debounce_frames=2)
 
-            # Dispatch haptic feedback to ESP32 Wristband
-            haptic_cmd = map_obstacle_to_haptic(result.primary_obstacle)
-            if hardware_active:
+            haptic_cmd = "O,0,0\n"
+
+            if result.primary_obstacle:
+                # Evaluate Confidence Policy (Phase 4)
+                decision = policy.evaluate(result.primary_obstacle)
+                dispatch_res = mode_router.handle_decision(decision)
+
+                if dispatch_res.haptic_cmd:
+                    # Translate internal code to firmware CSV format
+                    haptic_cmd = HapticBridge.translate_to_firmware(dispatch_res.haptic_cmd)
+
+                current_spoken_banner = dispatch_res.voice_text or decision.spoken_instruction
+                current_tier_label = decision.tier.value
+                if decision.tier == ConfidenceTier.BLOCKED:
+                    current_tier_color = (0, 0, 255)    # Red
+                elif decision.tier == ConfidenceTier.HEDGE:
+                    current_tier_color = (0, 215, 255)  # Amber
+                else:
+                    current_tier_color = (255, 0, 255)  # Magenta
+
+                had_previous_obstacle = True
+            else:
+                if had_previous_obstacle:
+                    if enable_voice and active_mode in (OutputMode.VOICE_ONLY, OutputMode.DUAL):
+                        mode_router.voice.speak("Path clear.", priority="low")
+                    current_spoken_banner = "Path clear."
+                    had_previous_obstacle = False
+                else:
+                    current_spoken_banner = "Path clear."
+
+                current_tier_label = "CLEAR"
+                current_tier_color = (0, 255, 0)  # Green
+
+            # Dispatch haptic feedback to ESP32 Wristband if active
+            if hardware_active and haptic_cmd != "O,0,0\n":
                 bridge.send_raw(haptic_cmd)
 
             # Print telemetry to terminal
             haptic_tag = f" | Haptic: {haptic_cmd.strip():<5}" if hardware_active else ""
+            voice_tag = f" | Voice: \"{current_spoken_banner}\"" if enable_voice else ""
             hud_status = (
-                f"[HAZARD] {result.primary_obstacle.label.upper()} "
+                f"[{current_tier_label}] {result.primary_obstacle.label.upper()} "
                 f"({result.primary_obstacle.distance_m}m, {result.primary_obstacle.urgency.upper()})"
                 if result.primary_obstacle
                 else "[CLEAR] Path is safe"
             )
 
             print(
-                f"Frame {frame_idx:03d} | {hud_status:<40} | "
-                f"Latency: {result.processing_time_ms:4.1f}ms | FPS: {result.fps:4.1f}{haptic_tag} | "
-                f"Obstacles: {len(result.obstacles)}"
+                f"Frame {frame_idx:03d} | {hud_status:<38} | "
+                f"Latency: {result.processing_time_ms:4.1f}ms | FPS: {result.fps:4.1f}{haptic_tag}{voice_tag}"
             )
 
-            for obs in result.obstacles:
-                lane_flag = "IN LANE" if obs.in_walking_lane else "off-path"
-                shd_str = f" | ShdLikelihood: {obs.shadow_likelihood:.2f}" if obs.shadow_likelihood > 0 else ""
-                print(
-                    f"    -> {obs.label:<12} | Conf: {obs.confidence:.2f}{shd_str} | "
-                    f"Dist: {obs.distance_m:4.1f}m | Pos: {obs.horizontal_position:<6} | {lane_flag}"
-                )
-
-            # Visual Display
+            # Visual Display with stylish HUD & Voice Narration Banner
             if not no_gui:
                 annotated = detector.annotate_frame(frame, result)
-                if hardware_active:
-                    cv2.putText(
-                        annotated,
-                        f"Haptic HW: {haptic_cmd.strip()}",
-                        (10, 85),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        (0, 255, 255),
-                        2
-                    )
+                h, w = annotated.shape[:2]
+
+                # Top Telemetry Badges
+                hw_str = f"ESP32: {haptic_cmd.strip()}" if hardware_active else "ESP32: Off"
+                voice_status = f"Voice: ON [{speech_rate}]" if enable_voice else "Voice: OFF"
+                top_badge_text = f"FPS: {result.fps:4.1f} | Latency: {result.processing_time_ms:3.0f}ms | Cadence: {cadence} | {hw_str} | {voice_status}"
+                cv2.putText(annotated, top_badge_text, (10, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (255, 255, 0), 1)
+
+                # Bottom Voice Narration Subtitle Banner
+                banner_y1 = h - 55
+                banner_y2 = h - 15
+                banner_x1 = 20
+                banner_x2 = w - 20
+
+                # Translucent dark pill background
+                overlay = annotated.copy()
+                cv2.rectangle(overlay, (banner_x1, banner_y1), (banner_x2, banner_y2), (20, 20, 20), -1)
+                cv2.addWeighted(overlay, 0.75, annotated, 0.25, 0, annotated)
+
+                # Color-coded border
+                cv2.rectangle(annotated, (banner_x1, banner_y1), (banner_x2, banner_y2), current_tier_color, 2)
+
+                # Icon/Tier and spoken text
+                display_msg = f"VOICE: \"{current_spoken_banner}\""
+                cv2.putText(
+                    annotated,
+                    display_msg,
+                    (banner_x1 + 15, banner_y1 + 26),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 255),
+                    2
+                )
+
                 cv2.imshow(win_name, annotated)
 
                 key = cv2.waitKey(10) & 0xFF
@@ -169,7 +219,6 @@ def run_perception_demo(
                     print("\nExiting visual preview...")
                     break
 
-                # If the window was closed with 'X', exit loop
                 try:
                     if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
                         print("\nWindow closed by user. Exiting...")
@@ -182,6 +231,7 @@ def run_perception_demo(
                 break
 
     finally:
+        mode_router.close()
         if hardware_active:
             print("Silencing and closing ESP32 Haptic Bridge...")
             bridge.silence()
@@ -190,11 +240,11 @@ def run_perception_demo(
         if not no_gui:
             cv2.destroyAllWindows()
 
-    print("\nPhase 2 Perception Demo finished successfully!")
+    print("\nPhase 2 & Phase 6 Perception & Voice Demo finished successfully!")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CampusEcho Perception Demo")
+    parser = argparse.ArgumentParser(description="CampusEcho Perception & Spoken Voice Demo")
     parser.add_argument(
         "--source",
         type=str,
@@ -224,6 +274,44 @@ if __name__ == "__main__":
         default=115200,
         help="Baud rate for ESP32 wristband (default: 115200)"
     )
+    parser.add_argument(
+        "--cadence",
+        type=int,
+        default=5,
+        help="Inference cadence: run full YOLO every N frames for 10-12 FPS (default: 5)"
+    )
+    parser.add_argument(
+        "--target-fps",
+        type=float,
+        default=12.0,
+        help="Target video playback FPS (default: 12.0)"
+    )
+    parser.add_argument(
+        "--voice",
+        dest="enable_voice",
+        action="store_true",
+        default=True,
+        help="Enable spoken voice narrations through PC speakers (default: True)"
+    )
+    parser.add_argument(
+        "--no-voice",
+        dest="enable_voice",
+        action="store_false",
+        help="Disable spoken voice narrations"
+    )
+    parser.add_argument(
+        "--speech-rate",
+        type=int,
+        default=2,
+        help="Speech speed rate (-10 to 10, default: 2 for concise navigation pace)"
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        default="DUAL",
+        choices=["DUAL", "VOICE_ONLY", "HAPTIC_ONLY"],
+        help="Output mode: DUAL, VOICE_ONLY, or HAPTIC_ONLY (default: DUAL)"
+    )
     args = parser.parse_args()
 
     run_perception_demo(
@@ -232,4 +320,9 @@ if __name__ == "__main__":
         max_frames=args.max_frames,
         haptic_port=args.haptic_port,
         haptic_baud=args.haptic_baud,
+        cadence=args.cadence,
+        target_fps=args.target_fps,
+        enable_voice=args.enable_voice,
+        speech_rate=args.speech_rate,
+        mode_str=args.mode,
     )

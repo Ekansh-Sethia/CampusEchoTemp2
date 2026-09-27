@@ -54,14 +54,15 @@ class ObstacleDetector:
 
     def __init__(
         self,
-        model_name: str = "yolov8n.pt",
-        confidence_threshold: float = 0.45,          # Raised from 0.35 – fewer noisy picks
+        model_name: str = "yolov8l.pt",
+        confidence_threshold: float = 0.65,          # Upgraded to YOLOv8l with 0.65 high-confidence gate
         target_classes: Optional[Set[str]] = None,
         focal_length_px: float = 650.0,
         enable_heuristics: bool = True,
         max_alert_distance_m: float = 4.0,           # Beyond this: track silently, no alert
-        alert_confidence_threshold: float = 0.55,    # Secondary gate before alerting
-        stability_required_sec: float = 2.0          # Static/parked must persist ≥N s
+        alert_confidence_threshold: float = 0.65,    # High confidence gate before alerting (0.6-0.7)
+        stability_required_sec: float = 2.0,         # Static/parked must persist ≥N s
+        inference_cadence: int = 1                   # Run full YOLO/hazards every N frames (cadence ≥ 4 for 10-12 FPS)
     ):
         self.model_name = model_name
         self.confidence_threshold = confidence_threshold
@@ -70,6 +71,7 @@ class ObstacleDetector:
         self.max_alert_distance_m = max_alert_distance_m
         self.alert_confidence_threshold = alert_confidence_threshold
         self.stability_required_sec = stability_required_sec
+        self.inference_cadence = max(1, inference_cadence)
 
         self.distance_estimator = DistanceEstimator(focal_length_px)
         self.shadow_analyzer = ShadowLightAnalyzer()
@@ -79,7 +81,8 @@ class ObstacleDetector:
         self._lock = threading.Lock()
         self._model = None
         self._frame_count = 0
-        self._last_process_time = 0.0
+        self._cached_detected_obstacles: Optional[List[DetectedObstacle]] = None
+        self._frame_timestamps: List[float] = []
 
         # Debounce tracking: {label: consecutive_frames_seen}
         self._seen_history: Dict[str, int] = {}
@@ -91,8 +94,19 @@ class ObstacleDetector:
     def _load_model_if_needed(self):
         """Lazy loader for YOLO model to allow import without immediate model weight download."""
         if self._model is None:
+            import torch
+            if not torch.cuda.is_available():
+                try:
+                    torch.set_num_threads(12)
+                except Exception:
+                    pass
             from ultralytics import YOLO
             self._model = YOLO(self.model_name)
+
+    def reset_cadence(self) -> None:
+        """Forces the next processed frame to be a full inference keyframe."""
+        with self._lock:
+            self._cached_detected_obstacles = None
 
     def process_frame(
         self,
@@ -121,90 +135,117 @@ class ObstacleDetector:
             self._load_model_if_needed()
             self._frame_count += 1
             h, w = frame.shape[:2]
+            now_ts = time.time()
 
-            detected_obstacles: List[DetectedObstacle] = []
-
-            # 1. Run YOLOv8n inference (CPU optimized)
-            results = self._model.predict(
-                source=frame,
-                conf=self.confidence_threshold,
-                verbose=False,
-                imgsz=640
+            is_keyframe = (
+                self.inference_cadence <= 1
+                or (self._frame_count % self.inference_cadence == 1)
+                or (self._cached_detected_obstacles is None)
             )
 
             current_labels_seen: Set[str] = set()
 
-            if results and len(results) > 0:
-                boxes = results[0].boxes
-                names = results[0].names
+            if is_keyframe:
+                detected_obstacles: List[DetectedObstacle] = []
 
-                for box in boxes:
-                    cls_id = int(box.cls[0].item())
-                    raw_label = names.get(cls_id, "object").lower()
-
-                    if raw_label not in self.target_classes:
-                        continue
-
-                    conf = float(box.conf[0].item())
-                    xyxy = box.xyxy[0].tolist()
-                    xmin, ymin, xmax, ymax = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
-                    bbox = (xmin, ymin, xmax, ymax)
-
-                    # Map raw YOLO vehicle classes to unified names if desired
-                    label = raw_label
-                    if raw_label in ("bicycle", "motorcycle"):
-                        label = "two_wheeler"
-                    elif raw_label in ("car", "bus", "truck"):
-                        label = "four_wheeler"
-
-                    # Ground contact y (bottom of wheels/base)
-                    contact_y = ymax
-
-                    dist = self.distance_estimator.estimate_distance(
-                        label, bbox, h, w, contact_y=contact_y
+                # 1. Run YOLO inference (CPU optimized with inference_mode)
+                import torch
+                with torch.inference_mode():
+                    results = self._model.predict(
+                        source=frame,
+                        conf=self.confidence_threshold,
+                        verbose=False,
+                        imgsz=640
                     )
+
+                if results and len(results) > 0:
+                    boxes = results[0].boxes
+                    names = results[0].names
+
+                    for box in boxes:
+                        cls_id = int(box.cls[0].item())
+                        raw_label = names.get(cls_id, "object").lower()
+
+                        if raw_label not in self.target_classes:
+                            continue
+
+                        conf = float(box.conf[0].item())
+                        xyxy = box.xyxy[0].tolist()
+                        xmin, ymin, xmax, ymax = int(xyxy[0]), int(xyxy[1]), int(xyxy[2]), int(xyxy[3])
+                        bbox = (xmin, ymin, xmax, ymax)
+
+                        # Map raw YOLO vehicle classes to unified names if desired
+                        label = raw_label
+                        if raw_label in ("bicycle", "motorcycle"):
+                            label = "two_wheeler"
+                        elif raw_label in ("car", "bus", "truck"):
+                            label = "four_wheeler"
+
+                        # Ground contact y (bottom of wheels/base)
+                        contact_y = ymax
+
+                        dist = self.distance_estimator.estimate_distance(
+                            label, bbox, h, w, contact_y=contact_y
+                        )
+                        in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
+                            bbox, w, h, dist
+                        )
+
+                        current_labels_seen.add(label)
+
+                        detected_obstacles.append(DetectedObstacle(
+                            label=label,
+                            confidence=round(conf, 2),
+                            bbox=bbox,
+                            bbox_normalized=(xmin / w, ymin / h, xmax / w, ymax / h),
+                            distance_m=dist,
+                            in_walking_lane=in_lane,
+                            horizontal_position=h_pos,
+                            urgency=urgency,
+                            is_environmental_hazard=False,
+                            detection_source="yolo",
+                            ground_contact_y=contact_y
+                        ))
+
+                # 2. Run Environmental Hazard Heuristics (stairs, potholes, walls, stones, trees, pillars, unidentified)
+                if self.enable_heuristics:
+                    env_hazards = self.hazard_detector.detect_hazards(
+                        frame, excluded_obstacles=detected_obstacles
+                    )
+                    for hazard in env_hazards:
+                        current_labels_seen.add(hazard.label)
+                        detected_obstacles.append(hazard)
+
+                # 3. Apply Shadow/Light Analysis to uncalibrated obstacles
+                for obs in detected_obstacles:
+                    if obs.shadow_likelihood == 0.0 and obs.label in ("stone", "pothole", "stair"):
+                        shd, cal_conf = self.shadow_analyzer.analyze_obstacle(
+                            frame, obs.bbox, obs.label, obs.confidence, timestamp=now_ts
+                        )
+                        obs.shadow_likelihood = shd
+                        obs.raw_confidence = obs.confidence
+                        obs.confidence = cal_conf
+
+                # Suppress obstacles whose confidence dropped below threshold due to shadow penalty
+                detected_obstacles = [o for o in detected_obstacles if o.confidence >= self.confidence_threshold]
+
+                # Update keyframe cache
+                self._cached_detected_obstacles = list(detected_obstacles)
+            else:
+                # Fast tracking frame: reuse cached detections with updated lane checks
+                detected_obstacles = []
+                for obs in self._cached_detected_obstacles:
                     in_lane, h_pos, urgency = self.distance_estimator.evaluate_walking_lane(
-                        bbox, w, h, dist
+                        obs.bbox, w, h, obs.distance_m
                     )
-
-                    current_labels_seen.add(label)
-
-                    detected_obstacles.append(DetectedObstacle(
-                        label=label,
-                        confidence=round(conf, 2),
-                        bbox=bbox,
-                        bbox_normalized=(xmin / w, ymin / h, xmax / w, ymax / h),
-                        distance_m=dist,
-                        in_walking_lane=in_lane,
-                        horizontal_position=h_pos,
-                        urgency=urgency,
-                        is_environmental_hazard=False,
-                        detection_source="yolo",
-                        ground_contact_y=contact_y
-                    ))
-
-            # 2. Run Environmental Hazard Heuristics (stairs, potholes, walls, stones, trees, pillars, unidentified)
-            if self.enable_heuristics:
-                env_hazards = self.hazard_detector.detect_hazards(
-                    frame, excluded_obstacles=detected_obstacles
-                )
-                for hazard in env_hazards:
-                    current_labels_seen.add(hazard.label)
-                    detected_obstacles.append(hazard)
-
-            # 3. Apply Shadow/Light Analysis to uncalibrated obstacles
-            now_ts = time.time()
-            for obs in detected_obstacles:
-                if obs.shadow_likelihood == 0.0 and obs.label in ("stone", "pothole", "stair"):
-                    shd, cal_conf = self.shadow_analyzer.analyze_obstacle(
-                        frame, obs.bbox, obs.label, obs.confidence, timestamp=now_ts
+                    current_labels_seen.add(obs.label)
+                    detected_obstacles.append(
+                        obs.model_copy(update={
+                            "in_walking_lane": in_lane,
+                            "horizontal_position": h_pos,
+                            "urgency": urgency
+                        })
                     )
-                    obs.shadow_likelihood = shd
-                    obs.raw_confidence = obs.confidence
-                    obs.confidence = cal_conf
-
-            # Suppress obstacles whose confidence dropped below threshold due to shadow penalty
-            detected_obstacles = [o for o in detected_obstacles if o.confidence >= self.confidence_threshold]
 
             # 4. Kinematic Tracking across frames (velocity, moving vs parked state)
             self.tracker.update(detected_obstacles, timestamp=now_ts)
@@ -280,12 +321,23 @@ class ObstacleDetector:
                 primary_obs = candidate
                 break
 
-            proc_time_ms = round((time.time() - start_time) * 1000.0, 1)
-            fps = round(1000.0 / proc_time_ms, 1) if proc_time_ms > 0 else 0.0
+            now_call = time.time()
+            proc_time_ms = max(0.5, round((now_call - start_time) * 1000.0, 1))
+
+            # Calculate steady throughput FPS across rolling window of frames
+            self._frame_timestamps.append(now_call)
+            if len(self._frame_timestamps) > 15:
+                self._frame_timestamps.pop(0)
+
+            if len(self._frame_timestamps) >= 2:
+                time_span = self._frame_timestamps[-1] - self._frame_timestamps[0]
+                fps = round((len(self._frame_timestamps) - 1) / time_span, 1) if time_span > 0 else 0.0
+            else:
+                fps = round(1000.0 / proc_time_ms, 1) if proc_time_ms > 0 else 0.0
 
             return FramePerceptionResult(
                 frame_id=self._frame_count,
-                timestamp=time.time(),
+                timestamp=now_call,
                 obstacles=detected_obstacles,
                 primary_obstacle=primary_obs,
                 path_clear=(primary_obs is None),

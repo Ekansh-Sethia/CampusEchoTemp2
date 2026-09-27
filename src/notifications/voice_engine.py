@@ -97,25 +97,131 @@ class VoiceQueue:
             self._last_enqueued = None
 
 
+class NativeVoiceSpeaker:
+    """
+    Native desktop Text-to-Speech audio synthesizer for Windows.
+    Uses System.Speech.Synthesis.SpeechSynthesizer via a persistent background process.
+    Supports asynchronous non-blocking speech, rate/volume control, and immediate cancellation
+    for urgent navigation alerts (BLOCKED / ESCALATE).
+    """
+
+    def __init__(self, rate: int = 2):
+        self._ps = None
+        self._lock = threading.Lock()
+        self._rate = max(-10, min(10, rate))
+        self._active = False
+        self._init_process()
+
+    def _init_process(self):
+        try:
+            import platform
+            if platform.system() != "Windows":
+                return
+
+            ps_cmd = (
+                f"Add-Type -AssemblyName System.Speech; "
+                f"$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+                f"$s.Rate = {self._rate}; "
+                f"while ($line = [Console]::In.ReadLine()) {{ "
+                f"  if ($line -eq '__CANCEL__') {{ $s.SpeakAsyncCancelAll() | Out-Null }} "
+                f"  else {{ $s.SpeakAsync($line) | Out-Null }} "
+                f"}}"
+            )
+            import subprocess
+            self._ps = subprocess.Popen(
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                bufsize=1
+            )
+            self._active = True
+        except Exception:
+            self._ps = None
+            self._active = False
+
+    def speak(self, text: str, interrupt: bool = False) -> None:
+        """Speak a phrase asynchronously without blocking the perception/video loop."""
+        if not self._ps or self._ps.poll() is not None:
+            return
+        with self._lock:
+            try:
+                if interrupt:
+                    self._ps.stdin.write("__CANCEL__\n")
+                clean = text.replace("\n", " ").replace("\r", " ").replace('"', "'").strip()
+                if clean:
+                    self._ps.stdin.write(f"{clean}\n")
+                    self._ps.stdin.flush()
+            except Exception:
+                pass
+
+    def cancel(self) -> None:
+        """Immediately cancel any speech currently playing."""
+        if not self._ps or self._ps.poll() is not None:
+            return
+        with self._lock:
+            try:
+                self._ps.stdin.write("__CANCEL__\n")
+                self._ps.stdin.flush()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        """Cleanly terminate the background synthesizer."""
+        with self._lock:
+            if self._ps and self._ps.poll() is None:
+                try:
+                    self._ps.stdin.write("__CANCEL__\n")
+                    self._ps.stdin.close()
+                    self._ps.terminate()
+                except Exception:
+                    pass
+                self._ps = None
+            self._active = False
+
+
 class VoiceEngine:
     """
     High-level voice notification engine.
-    Wraps VoiceQueue with convenience methods for the notification layer.
-    All actual speech synthesis is handled browser-side via Web Speech API.
-    The engine emits instructions that the API server broadcasts as WebSocket events.
+    Wraps VoiceQueue with priority gating, deduplication, and multi-channel dispatch.
+    Emits instructions that the API server broadcasts as WebSocket events for Web Speech API,
+    and optionally synthesizes spoken audio directly via NativeVoiceSpeaker during video/CLI testing.
     """
 
-    def __init__(self):
+    def __init__(self, enable_local_audio: bool = False, speech_rate: int = 2):
         self.queue = VoiceQueue()
+        self.enable_local_audio = enable_local_audio
+        self._speech_rate = speech_rate
+        self._speaker: Optional[NativeVoiceSpeaker] = (
+            NativeVoiceSpeaker(rate=speech_rate) if enable_local_audio else None
+        )
+
+    def enable_audio(self, enabled: bool = True, speech_rate: Optional[int] = None) -> None:
+        """Enable or disable local desktop audio output at runtime."""
+        self.enable_local_audio = enabled
+        if speech_rate is not None:
+            self._speech_rate = speech_rate
+
+        if enabled:
+            if self._speaker is None:
+                self._speaker = NativeVoiceSpeaker(rate=self._speech_rate)
+        else:
+            if self._speaker is not None:
+                self._speaker.close()
+                self._speaker = None
 
     def speak(self, text: str, priority: str = "normal", interrupt: bool = False) -> bool:
-        """Enqueue a spoken instruction."""
+        """Enqueue a spoken instruction and optionally synthesize audio locally."""
         instruction = VoiceInstruction(
             text=text,
             priority=priority,
             interrupt_previous=interrupt,
         )
-        return self.queue.enqueue(instruction)
+        enqueued = self.queue.enqueue(instruction)
+        if enqueued and self.enable_local_audio and self._speaker:
+            self._speaker.speak(text, interrupt=interrupt)
+        return enqueued
 
     def speak_urgent(self, text: str) -> bool:
         """Enqueue an urgent message that clears the queue and speaks immediately."""
@@ -131,6 +237,15 @@ class VoiceEngine:
 
     def flush(self) -> None:
         self.queue.flush()
+        if self._speaker:
+            self._speaker.cancel()
+
+    def close(self) -> None:
+        """Clean up local audio resources on shutdown."""
+        if self._speaker:
+            self._speaker.close()
+            self._speaker = None
 
     def pending(self) -> int:
         return self.queue.pending_count()
+

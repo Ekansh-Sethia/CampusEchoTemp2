@@ -176,3 +176,15 @@ class TestModeRouter:
         router.handle_decision(make_decision(ConfidenceTier.BLOCKED))
         router.handle_decision(make_decision(ConfidenceTier.HEDGE))
         assert len(self.dispatched) == 2
+
+    def test_local_audio_toggle(self):
+        router = ModeRouter(mode=OutputMode.DUAL)
+        assert router.voice.enable_local_audio is False
+        router.enable_local_audio(True, speech_rate=3)
+        assert router.voice.enable_local_audio is True
+        assert router.voice._speaker is not None
+        router.enable_local_audio(False)
+        assert router.voice.enable_local_audio is False
+        assert router.voice._speaker is None
+        router.close()
+

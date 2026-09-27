@@ -65,6 +65,17 @@ class ModeRouter:
             )
             for cb in self._callbacks:
                 cb(silence_res)
+        elif mode == OutputMode.HAPTIC_ONLY:
+            # Flush pending speech and silence speaker immediately
+            self.voice.flush()
+
+    def enable_local_audio(self, enabled: bool = True, speech_rate: int = 2) -> None:
+        """Enable or disable local desktop audio synthesis (PC speakers) at runtime."""
+        self.voice.enable_audio(enabled=enabled, speech_rate=speech_rate)
+
+    def close(self) -> None:
+        """Cleanly close underlying notification engines."""
+        self.voice.close()
 
     def register_callback(self, callback: Callable[[DispatchResult], None]) -> None:
         """Register a callback that fires on every dispatched output event."""

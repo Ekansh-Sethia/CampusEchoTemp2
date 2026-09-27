@@ -85,17 +85,24 @@ class VideoSource:
         return ret, frame
 
     def stream(self) -> Iterator[np.ndarray]:
-        """Generator yielding frames at roughly target_fps rate."""
-        frame_delay = 1.0 / self.target_fps
+        """Generator yielding frames at target_fps rate, maintaining average throughput."""
+        frame_idx = 0
+        stream_start = time.time()
         while self.is_opened:
-            start_t = time.time()
             ret, frame = self.read_frame()
             if not ret or frame is None:
                 break
+            frame_idx += 1
             yield frame
-            elapsed = time.time() - start_t
-            if elapsed < frame_delay:
-                time.sleep(frame_delay - elapsed)
+            # Throughput pacing: target time for frame_idx
+            target_elapsed = frame_idx / self.target_fps
+            actual_elapsed = time.time() - stream_start
+            sleep_needed = target_elapsed - actual_elapsed
+            if sleep_needed > 0:
+                time.sleep(sleep_needed)
+            elif actual_elapsed - target_elapsed > 1.0:
+                # Reset clock reference if fallen behind by >1s (e.g. initial model loading)
+                stream_start = time.time() - (frame_idx / self.target_fps)
 
     def release(self) -> None:
         """Releases camera/video resources."""

@@ -14,6 +14,7 @@ class Node(BaseModel):
     label: str
     expected_signs: List[str] = Field(default_factory=list)
     landmark_image: Optional[str] = None
+    landmark_images: List[str] = Field(default_factory=list)
 
 
 class Edge(BaseModel):

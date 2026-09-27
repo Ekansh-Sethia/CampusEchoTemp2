@@ -15,8 +15,13 @@
       "name": "Golden Gate",
       "type": "entrance",
       "label": "Golden Gate (Main Gate)",
-      "expected_signs": ["GOLDEN GATE", "MAIN GATE", "COLLEGE ENTRANCE"],
-      "landmark_image": "golden_gate.jpg"
+      "expected_signs": ["GOLDEN GATE", "MAIN GATE", "COLLEGE ENTRANCE", "SGSITS", "GSITS"],
+      "landmark_image": "GS Photos/goldenGate_ag1.jpg",
+      "landmark_images": [
+        "GS Photos/goldenGate_ag1.jpg",
+        "GS Photos/GoldenGate_ag2.jpg",
+        "GS Photos/GoldenGate_ag3.jpg"
+      ]
     },
     {
       "id": "golden_gate_turn",
@@ -24,7 +29,8 @@
       "type": "waypoint",
       "label": "Turn towards ATC Building",
       "expected_signs": [],
-      "landmark_image": null
+      "landmark_image": null,
+      "landmark_images": []
     },
     {
       "id": "atc_building",
@@ -32,7 +38,8 @@
       "type": "building",
       "label": "ATC Building Entrance",
       "expected_signs": ["ATC BUILDING", "ATC", "ACADEMIC & TECHNOLOGY COMPLEX"],
-      "landmark_image": "atc_building.jpg"
+      "landmark_image": "GS Photos/Atc.jpg",
+      "landmark_images": ["GS Photos/Atc.jpg"]
     },
     {
       "id": "atc_junction",
@@ -40,7 +47,8 @@
       "type": "junction",
       "label": "Junction outside ATC Building",
       "expected_signs": ["TO SILVERIA HALL", "TO PLUS POINT"],
-      "landmark_image": null
+      "landmark_image": null,
+      "landmark_images": []
     },
     {
       "id": "plus_point",
@@ -48,7 +56,13 @@
       "type": "landmark",
       "label": "Plus Point Landmark",
       "expected_signs": ["PLUS POINT", "PLUS POINT CAFE", "CAMPUS CENTER"],
-      "landmark_image": "plus_point.jpg"
+      "landmark_image": "GS Photos/PlusPoint_ag1.jpg",
+      "landmark_images": [
+        "GS Photos/PlusPoint_ag1.jpg",
+        "GS Photos/PlusPoint_ag2.jpg",
+        "GS Photos/PlusPoint_ag3.jpg",
+        "GS Photos/PlusPoint_ag4.jpg"
+      ]
     },
     {
       "id": "silveria_hall",

@@ -33,9 +33,9 @@
   },
   {
     "id": "B5",
-    "name": "Library",
+    "name": "Exam Dept",
     "floor": 0,
-    "zone": "Library",
+    "zone": "Exam Dept",
     "x": 10.0,
     "y": 5.0
   }

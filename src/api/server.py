@@ -78,10 +78,12 @@ app.add_middleware(
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
-# Mount indoor recovery backend app
+# Mount indoor recovery backend app and register its API / WebSocket routes directly
 try:
-    from backend.app import app as indoor_app
+    from backend.app import app as indoor_app, websocket_indoor_endpoint
     app.mount("/indoor-app", indoor_app)
+    app.include_router(indoor_app.router)
+    app.add_api_websocket_route("/ws/indoor", websocket_indoor_endpoint)
 except Exception as e:
     print(f"[IndoorRecovery] Optional mount note: {e}")
 

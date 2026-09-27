@@ -76,6 +76,8 @@ Examples:
                         help="COM port for ESP32 Bluetooth wristband (e.g. COM5 or 'auto')")
     parser.add_argument("--haptic-baud", default=115200, type=int,
                         help="Baud rate for ESP32 Bluetooth wristband (default: 115200)")
+    parser.add_argument("--indoor", action="store_true",
+                        help="Open the Indoor Landmark Position Recovery Dashboard")
     args = parser.parse_args()
 
     # Map mode shorthand
@@ -148,16 +150,18 @@ Examples:
 
     # ── 4. Open dashboard in browser ───────────────────────────────────
     if not args.no_browser:
-        dashboard_url = f"http://{args.host}:{args.port}/dashboard"
+        target_path = "/indoor" if args.indoor else "/dashboard"
+        dashboard_url = f"http://{args.host}:{args.port}{target_path}"
         webbrowser.open(dashboard_url)
         print(f"[Dashboard] Opened in browser: {dashboard_url}")
 
     # ── 5. Print ready status ──────────────────────────────────────────
     print()
     print("  CampusEcho is running.")
-    print(f"  Dashboard  : http://{args.host}:{args.port}/dashboard")
-    print(f"  API Docs   : http://{args.host}:{args.port}/docs")
-    print(f"  API Status : http://{args.host}:{args.port}/status")
+    print(f"  Outdoor Dashboard : http://{args.host}:{args.port}/dashboard")
+    print(f"  Indoor Recovery   : http://{args.host}:{args.port}/indoor")
+    print(f"  API Docs          : http://{args.host}:{args.port}/docs")
+    print(f"  API Status        : http://{args.host}:{args.port}/status")
     print()
     print("  Press Ctrl+C to stop.")
     print()

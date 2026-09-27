@@ -1,0 +1,42 @@
+[
+  {
+    "id": "B1",
+    "name": "Main Entrance",
+    "floor": 0,
+    "zone": "Entrance",
+    "x": 0.0,
+    "y": 0.0
+  },
+  {
+    "id": "B2",
+    "name": "Central Corridor",
+    "floor": 0,
+    "zone": "Corridor",
+    "x": 5.0,
+    "y": 0.0
+  },
+  {
+    "id": "B3",
+    "name": "Computer Lab",
+    "floor": 0,
+    "zone": "Lab",
+    "x": 10.0,
+    "y": 0.0
+  },
+  {
+    "id": "B4",
+    "name": "Staircase",
+    "floor": 0,
+    "zone": "Staircase",
+    "x": 5.0,
+    "y": 5.0
+  },
+  {
+    "id": "B5",
+    "name": "Library",
+    "floor": 0,
+    "zone": "Library",
+    "x": 10.0,
+    "y": 5.0
+  }
+]

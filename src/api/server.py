@@ -78,6 +78,13 @@ app.add_middleware(
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
+# Mount indoor recovery backend app
+try:
+    from backend.app import app as indoor_app
+    app.mount("/indoor-app", indoor_app)
+except Exception as e:
+    print(f"[IndoorRecovery] Optional mount note: {e}")
+
 
 # ─── Request / Response Schemas ─────────────────────────────────────────────────
 
@@ -127,6 +134,18 @@ def serve_dashboard():
     dashboard_path = STATIC_DIR / "dashboard.html"
     if not dashboard_path.exists():
         raise HTTPException(status_code=404, detail="Dashboard not found. Run from project root.")
+    return FileResponse(str(dashboard_path), media_type="text/html")
+
+
+@app.get("/indoor", tags=["Dashboard"], include_in_schema=False)
+def serve_indoor_dashboard():
+    """Serves the Indoor Landmark & Position Recovery Dashboard."""
+    root = Path(__file__).parent.parent.parent
+    dashboard_path = root / "dashboard" / "indoor_dashboard.html"
+    if not dashboard_path.exists():
+        dashboard_path = STATIC_DIR / "indoor_dashboard.html"
+    if not dashboard_path.exists():
+        raise HTTPException(status_code=404, detail="Indoor Dashboard not found.")
     return FileResponse(str(dashboard_path), media_type="text/html")
 
 

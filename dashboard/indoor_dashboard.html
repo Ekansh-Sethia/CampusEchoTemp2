@@ -1,0 +1,1446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CampusEcho — Indoor Landmark Position Recovery</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #0a0e17;
+      --bg-card: rgba(18, 24, 38, 0.75);
+      --bg-card-border: rgba(255, 255, 255, 0.08);
+      --bg-card-hover: rgba(26, 35, 56, 0.85);
+      --primary: #10b981;
+      --primary-glow: rgba(16, 185, 129, 0.35);
+      --accent-blue: #3b82f6;
+      --accent-purple: #8b5cf6;
+      --accent-amber: #f59e0b;
+      --accent-red: #ef4444;
+      --accent-cyan: #06b6d4;
+      --text-main: #f3f4f6;
+      --text-muted: #9ca3af;
+      --text-dim: #6b7280;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background-color: var(--bg-dark);
+      background-image: 
+        radial-gradient(circle at 15% 20%, rgba(16, 185, 129, 0.08) 0%, transparent 40%),
+        radial-gradient(circle at 85% 80%, rgba(59, 130, 246, 0.08) 0%, transparent 40%);
+      color: var(--text-main);
+      font-family: 'Outfit', sans-serif;
+      min-height: 100vh;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 24px;
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--bg-card-border);
+      border-radius: 16px;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
+      flex-wrap: wrap;
+      gap: 16px;
+    }
+
+    .logo-container {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+    }
+
+    .badge-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(16, 185, 129, 0.15);
+      color: var(--primary);
+      border: 1px solid rgba(16, 185, 129, 0.3);
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .badge-live::before {
+      content: '';
+      width: 7px;
+      height: 7px;
+      background: var(--primary);
+      border-radius: 50%;
+      box-shadow: 0 0 8px var(--primary);
+      animation: pulse 1.6s infinite ease-in-out;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(0.8); }
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 700;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .header-sub {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+    }
+
+    .status-pills {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .pill {
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--bg-card-border);
+      padding: 6px 14px;
+      border-radius: 10px;
+      font-size: 0.8rem;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .pill-label {
+      color: var(--text-dim);
+      font-weight: 500;
+    }
+
+    .pill-val {
+      font-weight: 600;
+      color: var(--text-main);
+    }
+
+    /* Judge Preset Bar */
+    .judge-panel {
+      background: linear-gradient(135deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.85) 100%);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      border-radius: 16px;
+      padding: 16px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .judge-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .judge-title {
+      font-size: 0.88rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #93c5fd;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .judge-buttons {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .btn-judge {
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text-main);
+      padding: 9px 16px;
+      border-radius: 10px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .btn-judge:hover {
+      background: rgba(59, 130, 246, 0.2);
+      border-color: rgba(59, 130, 246, 0.5);
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+    }
+
+    .btn-settings {
+      background: rgba(16, 185, 129, 0.15);
+      border: 1px solid rgba(16, 185, 129, 0.4);
+      color: #6ee7b7;
+    }
+
+    .btn-settings:hover {
+      background: rgba(16, 185, 129, 0.25);
+      border-color: var(--primary);
+      box-shadow: 0 4px 12px var(--primary-glow);
+    }
+
+    /* Main Grid */
+    .grid-container {
+      display: grid;
+      grid-template-columns: 340px 1fr 340px;
+      gap: 20px;
+      flex: 1;
+    }
+
+    @media (max-width: 1200px) {
+      .grid-container {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .card {
+      background: var(--bg-card);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--bg-card-border);
+      border-radius: 16px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card-title {
+      font-size: 0.85rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    /* Location Card */
+    .location-display {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: rgba(0, 0, 0, 0.25);
+      padding: 16px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    .loc-zone {
+      font-size: 1.5rem;
+      font-weight: 700;
+      color: #ffffff;
+    }
+
+    .loc-meta {
+      display: flex;
+      gap: 12px;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      flex-wrap: wrap;
+    }
+
+    .source-tag {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 8px;
+      font-size: 0.72rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .source-ble { background: rgba(16, 185, 129, 0.2); color: var(--primary); border: 1px solid var(--primary); }
+    .source-gps { background: rgba(6, 182, 212, 0.2); color: var(--accent-cyan); border: 1px solid var(--accent-cyan); }
+    .source-qr  { background: rgba(139, 92, 246, 0.2); color: var(--accent-purple); border: 1px solid var(--accent-purple); }
+    .source-last { background: rgba(245, 158, 11, 0.2); color: var(--accent-amber); border: 1px solid var(--accent-amber); }
+    .source-unknown { background: rgba(239, 68, 68, 0.2); color: var(--accent-red); border: 1px solid var(--accent-red); }
+
+    /* Confidence Meter */
+    .confidence-box {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .meter-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.82rem;
+      font-weight: 600;
+    }
+
+    .meter-bar-bg {
+      height: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 10px;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .meter-bar-fill {
+      height: 100%;
+      border-radius: 10px;
+      transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.4s ease;
+      box-shadow: 0 0 10px currentColor;
+    }
+
+    /* Safe Mode Alert Card */
+    .safe-alert {
+      display: none;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      padding: 14px;
+      border-radius: 12px;
+      color: #fca5a5;
+      font-size: 0.85rem;
+      line-height: 1.4;
+      animation: alertPulse 2s infinite ease-in-out;
+    }
+
+    @keyframes alertPulse {
+      0%, 100% { border-color: rgba(239, 68, 68, 0.4); }
+      50% { border-color: rgba(239, 68, 68, 0.8); box-shadow: 0 0 15px rgba(239, 68, 68, 0.2); }
+    }
+
+    /* Action Command Card */
+    .action-display {
+      background: rgba(0, 0, 0, 0.35);
+      border-radius: 14px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      text-align: center;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .action-icon {
+      font-size: 3rem;
+      height: 70px;
+      width: 70px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 50%;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+
+    .action-cmd {
+      font-size: 1.8rem;
+      font-weight: 800;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    .action-desc {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      max-width: 260px;
+    }
+
+    /* Motor Visualizer */
+    .motors-container {
+      display: flex;
+      gap: 16px;
+      justify-content: space-around;
+      padding: 10px 0;
+    }
+
+    .motor-unit {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .motor-disc {
+      width: 58px;
+      height: 58px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.05);
+      border: 2px solid rgba(255, 255, 255, 0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.8rem;
+      font-weight: 600;
+      transition: all 0.2s ease;
+    }
+
+    .motor-active {
+      background: rgba(16, 185, 129, 0.25);
+      border-color: var(--primary);
+      color: #ffffff;
+      box-shadow: 0 0 20px var(--primary-glow);
+      animation: vibMotor 0.1s infinite alternate;
+    }
+
+    @keyframes vibMotor {
+      from { transform: translate(-1px, 1px); }
+      to { transform: translate(1px, -1px); }
+    }
+
+    .motor-name {
+      font-size: 0.75rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    /* Map Canvas */
+    .map-wrapper {
+      position: relative;
+      width: 100%;
+      height: 380px;
+      background: rgba(10, 14, 23, 0.85);
+      border-radius: 14px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      overflow: hidden;
+    }
+
+    #mapSvg {
+      width: 100%;
+      height: 100%;
+    }
+
+    /* Controls & Forms */
+    select, input[type="text"], input[type="number"] {
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text-main);
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-family: 'Outfit', sans-serif;
+      font-size: 0.9rem;
+      outline: none;
+      width: 100%;
+    }
+
+    select:focus, input[type="text"]:focus, input[type="number"]:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 10px var(--primary-glow);
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #042f2e;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 0.88rem;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      width: 100%;
+    }
+
+    .btn-primary:hover {
+      background: #059669;
+      box-shadow: 0 0 15px var(--primary-glow);
+      transform: translateY(-1px);
+    }
+
+    /* Quick QR Launcher */
+    .qr-pill-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(65px, 1fr));
+      gap: 6px;
+    }
+
+    .btn-qr-chip {
+      background: rgba(139, 92, 246, 0.15);
+      border: 1px solid rgba(139, 92, 246, 0.35);
+      color: #c4b5fd;
+      padding: 8px 4px;
+      border-radius: 8px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.2s;
+    }
+
+    .btn-qr-chip:hover {
+      background: rgba(139, 92, 246, 0.35);
+      border-color: var(--accent-purple);
+      transform: scale(1.05);
+    }
+
+    /* Terminal Console */
+    .terminal-box {
+      background: #05070c;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 12px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.76rem;
+      color: #a7f3d0;
+      height: 140px;
+      overflow-y: auto;
+      line-height: 1.5;
+    }
+
+    .log-time { color: var(--text-dim); margin-right: 6px; }
+    .log-warn { color: #fde047; }
+    .log-err  { color: #f87171; }
+    .log-sys  { color: #60a5fa; }
+
+    /* Landmark Settings Modal */
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      z-index: 1000;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+
+    .modal-content {
+      background: #111827;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 20px;
+      width: 100%;
+      max-width: 820px;
+      max-height: 90vh;
+      overflow-y: auto;
+      padding: 26px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7);
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      padding-bottom: 14px;
+    }
+
+    .modal-title {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .btn-close {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.5rem;
+      cursor: pointer;
+    }
+
+    .btn-close:hover {
+      color: #ffffff;
+    }
+
+    .landmark-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.84rem;
+    }
+
+    .landmark-table th, .landmark-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      text-align: left;
+    }
+
+    .landmark-table th {
+      color: var(--text-muted);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.05em;
+    }
+
+    .landmark-table input {
+      padding: 6px 10px;
+      font-size: 0.82rem;
+    }
+
+    .btn-table-action {
+      background: rgba(239, 68, 68, 0.2);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      color: #fca5a5;
+      padding: 6px 10px;
+      border-radius: 8px;
+      font-size: 0.76rem;
+      cursor: pointer;
+    }
+
+    .btn-table-action:hover {
+      background: rgba(239, 68, 68, 0.4);
+    }
+
+    .modal-actions {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      padding-top: 16px;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <header>
+    <div class="logo-container">
+      <div>
+        <div style="display: flex; align-items: center; gap: 10px;">
+          <h1>CampusEcho</h1>
+          <span class="badge-live">Indoor Recovery Live</span>
+        </div>
+        <div class="header-sub">Hackathon Challenge — BLE Landmark Smoothing & Safe Position Recovery</div>
+      </div>
+    </div>
+
+    <div class="status-pills">
+      <div class="pill">
+        <span class="pill-label">GPS:</span>
+        <span class="pill-val" id="pillGps">Unavailable</span>
+      </div>
+      <div class="pill">
+        <span class="pill-label">BLE:</span>
+        <span class="pill-val" id="pillBle">Scanning</span>
+      </div>
+      <div class="pill">
+        <span class="pill-label">ESP32:</span>
+        <span class="pill-val" id="pillEsp32">Checking...</span>
+      </div>
+      <button class="btn-judge btn-settings" onclick="openLandmarkModal()">
+        ⚙ Landmark Settings
+      </button>
+    </div>
+  </header>
+
+  <!-- Judge Quick Demo Toolbar -->
+  <div class="judge-panel">
+    <div class="judge-header">
+      <span class="judge-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+        Judge Verification Test Suite (Spec Section 26)
+      </span>
+      <span style="font-size: 0.78rem; color: #94a3b8;">Click any test to simulate live hardware sequence</span>
+    </div>
+    <div class="judge-buttons">
+      <button class="btn-judge" onclick="runPreset('test1_normal')">Test 1: Normal (B1 → B3)</button>
+      <button class="btn-judge" onclick="runPreset('test2_gps_loss')">Test 2: GPS Loss → BLE B2</button>
+      <button class="btn-judge" onclick="runPreset('test3_ble_recovery')">Test 3: BLE B3 Recovery</button>
+      <button class="btn-judge" onclick="runPreset('test4_confidence_drop')">Test 4: Confidence Drop (Safe UNKNOWN)</button>
+      <button class="btn-judge" onclick="runPreset('test5_qr_recovery')">Test 5: Explicit QR B4 Recovery</button>
+      <button class="btn-judge" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #fca5a5;" onclick="resetAll()">Reset State</button>
+    </div>
+  </div>
+
+  <!-- Main Grid -->
+  <div class="grid-container">
+
+    <!-- Left Column: Localization & Confidence -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      
+      <!-- Current Location Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>Current Position</span>
+          <span id="sourceTag" class="source-tag source-ble">BLE</span>
+        </div>
+
+        <div class="location-display">
+          <div class="loc-zone" id="displayZone">Detecting...</div>
+          <div class="loc-meta">
+            <span>Landmark: <b id="displayLandmarkId">--</b></span>
+            <span>Floor: <b id="displayFloor">0</b></span>
+            <span>Coords: <b id="displayCoords">(--, --)</b></span>
+          </div>
+        </div>
+
+        <!-- Confidence Gauge -->
+        <div class="confidence-box">
+          <div class="meter-label">
+            <span>Localization Confidence</span>
+            <span id="confidenceText">0% LOW</span>
+          </div>
+          <div class="meter-bar-bg">
+            <div id="confidenceBar" class="meter-bar-fill" style="width: 0%; background-color: var(--accent-red); color: var(--accent-red);"></div>
+          </div>
+        </div>
+
+        <!-- Safe Low-Confidence Alert -->
+        <div id="safeAlert" class="safe-alert">
+          <div style="font-weight: 700; color: #ef4444; margin-bottom: 4px;">LOCALIZATION UNCERTAIN (SAFE MODE)</div>
+          Confidence below safe threshold (&lt;50%). Directional steering suppressed to prevent misleading guidance. Move toward marked beacon or scan QR.
+        </div>
+      </div>
+
+      <!-- Fallback QR Recovery Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>Optical QR Fallback</span>
+          <span style="font-size: 0.72rem; color: #a78bfa;">Section 14</span>
+        </div>
+        <p style="font-size: 0.8rem; color: var(--text-muted);">
+          Scan landmark marker tag when BLE signal is degraded or absent.
+        </p>
+        <div class="qr-pill-grid" id="qrChipsContainer">
+          <!-- Dynamically populated from active landmarks -->
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <input type="text" id="manualQrInput" placeholder="Enter QR text (e.g. B3)" />
+          <button class="btn-primary" style="width: auto; padding: 0 16px;" onclick="submitManualQR()">Scan</button>
+        </div>
+      </div>
+
+      <!-- Terminal Log Card -->
+      <div class="card">
+        <div class="card-title">
+          <span>Telemetry Stream</span>
+          <span style="font-size: 0.72rem; color: var(--text-dim);" id="wsStatus">WebSocket: Active</span>
+        </div>
+        <div class="terminal-box" id="terminalLog"></div>
+      </div>
+
+    </div>
+
+    <!-- Center Column: Indoor Map & Navigation Action -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      
+      <!-- Interactive 2D Topological Map -->
+      <div class="card" style="flex: 1;">
+        <div class="card-title">
+          <span>Indoor Topological Map</span>
+          <span id="routeSummary" style="font-size: 0.8rem; color: var(--primary);">Route: Calculating...</span>
+        </div>
+
+        <div class="map-wrapper">
+          <svg id="mapSvg" viewBox="-20 -20 280 200" preserveAspectRatio="xMidYMid meet">
+            <!-- Edges and Nodes dynamically drawn here -->
+          </svg>
+        </div>
+
+        <div style="display: flex; justify-content: space-between; font-size: 0.78rem; color: var(--text-dim);">
+          <span>● Green: Active Landmark</span>
+          <span>● Purple: Destination</span>
+          <span>━ Glowing Line: Active Route</span>
+        </div>
+      </div>
+
+      <!-- Navigation Next Action Output -->
+      <div class="card">
+        <div class="card-title">
+          <span>Next Navigation Action</span>
+          <span id="navStateBadge" class="source-tag" style="background: rgba(255,255,255,0.08); color: var(--text-main);">IDLE</span>
+        </div>
+
+        <div class="action-display">
+          <div class="action-icon" id="actionIcon">⚡</div>
+          <div class="action-cmd" id="actionCommand">STANDBY</div>
+          <div class="action-desc" id="actionInstruction">Select a destination to calculate guidance.</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Right Column: Hardware & Controls -->
+    <div style="display: flex; flex-direction: column; gap: 20px;">
+      
+      <!-- Destination Selector -->
+      <div class="card">
+        <div class="card-title">
+          <span>Select Destination</span>
+        </div>
+        <select id="destSelect" onchange="changeDestination()">
+          <option value="">-- Choose Target Landmark --</option>
+          <!-- Dynamically populated from landmarks.json -->
+        </select>
+        <button class="btn-primary" onclick="changeDestination()">Set Destination & Route</button>
+      </div>
+
+      <!-- ESP32 Wristband Hardware State -->
+      <div class="card">
+        <div class="card-title">
+          <span>ESP32 Haptic Wristband</span>
+          <span id="esp32PillTag" class="source-tag" style="background: rgba(16, 185, 129, 0.2); color: var(--primary);">GPIO 25/26</span>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 6px;">
+          <label style="font-size: 0.78rem; color: var(--text-muted);">ESP32 Wi-Fi IP Address:</label>
+          <div style="display: flex; gap: 8px;">
+            <input type="text" id="esp32IpInput" placeholder="192.168.1.100 (or SoftAP 192.168.4.1)" />
+            <button class="btn-primary" style="width: auto; padding: 0 14px;" onclick="saveEsp32Ip()">Save</button>
+          </div>
+        </div>
+
+        <!-- Vibration Motor Feedback Sim -->
+        <div style="background: rgba(0,0,0,0.25); border-radius: 12px; padding: 14px;">
+          <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 8px; text-align: center;">Dual Transistor Motor Actuation</div>
+          <div class="motors-container">
+            <div class="motor-unit">
+              <div id="motorLeft" class="motor-disc">OFF</div>
+              <span class="motor-name">Left (GPIO25)</span>
+            </div>
+            <div class="motor-unit">
+              <div id="motorRight" class="motor-disc">OFF</div>
+              <span class="motor-name">Right (GPIO26)</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Manual Haptic Pulse Test -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+          <button class="btn-judge" style="font-size: 0.75rem; justify-content: center;" onclick="sendManualCommand('LEFT')">Test LEFT</button>
+          <button class="btn-judge" style="font-size: 0.75rem; justify-content: center;" onclick="sendManualCommand('RIGHT')">Test RIGHT</button>
+          <button class="btn-judge" style="font-size: 0.75rem; justify-content: center;" onclick="sendManualCommand('FORWARD')">Test FORWARD</button>
+          <button class="btn-judge" style="font-size: 0.75rem; justify-content: center;" onclick="sendManualCommand('STOP')">Test STOP</button>
+        </div>
+      </div>
+
+      <!-- BLE Signal Strength Simulator -->
+      <div class="card">
+        <div class="card-title">
+          <span>BLE Scanner Input</span>
+        </div>
+        <p style="font-size: 0.78rem; color: var(--text-muted);">
+          Simulate walking near landmark beacons:
+        </p>
+        <div id="bleChipsContainer" style="display: flex; flex-direction: column; gap: 8px;">
+          <!-- Dynamically populated from active landmarks -->
+        </div>
+      </div>
+
+    </div>
+
+  </div>
+
+  <!-- Landmark Settings Modal -->
+  <div id="landmarkModal" class="modal-backdrop">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">
+          <span>⚙ Indoor Landmarks Configuration</span>
+        </div>
+        <button class="btn-close" onclick="closeLandmarkModal()">&times;</button>
+      </div>
+
+      <p style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.4;">
+        Manage indoor landmark IDs, zones, names, and floor coordinates (X, Y). Changes are synchronized immediately across the topological graph, routing engine, QR validator, and hardware dispatch.
+      </p>
+
+      <div style="overflow-x: auto;">
+        <table class="landmark-table">
+          <thead>
+            <tr>
+              <th style="width: 70px;">ID</th>
+              <th>Name</th>
+              <th>Zone</th>
+              <th style="width: 70px;">Floor</th>
+              <th style="width: 75px;">X</th>
+              <th style="width: 75px;">Y</th>
+              <th style="width: 60px;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="landmarkTableBody">
+            <!-- Dynamically populated -->
+          </tbody>
+        </table>
+      </div>
+
+      <div>
+        <button class="btn-judge" style="font-size: 0.8rem;" onclick="addLandmarkRow()">+ Add New Landmark</button>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-judge" style="background: rgba(239, 68, 68, 0.15); border-color: rgba(239, 68, 68, 0.4); color: #fca5a5;" onclick="resetLandmarksToDefault()">
+          Reset to B1-B5 Defaults
+        </button>
+        <div style="display: flex; gap: 10px;">
+          <button class="btn-judge" onclick="closeLandmarkModal()">Cancel</button>
+          <button class="btn-primary" style="width: auto; padding: 10px 20px;" onclick="saveLandmarkSettings()">Save & Sync Dashboard</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State Store
+    let systemState = null;
+    let ws = null;
+    let currentLandmarks = [];
+
+    // Connect WebSocket
+    function connectWS() {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/ws/indoor`;
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        log("WebSocket connected to indoor navigation engine.", "sys");
+        document.getElementById("wsStatus").innerText = "WebSocket: Active";
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          updateUI(data);
+        } catch (e) {
+          console.error("WS Parse error", e);
+        }
+      };
+
+      ws.onclose = () => {
+        document.getElementById("wsStatus").innerText = "WebSocket: Reconnecting...";
+        setTimeout(connectWS, 2000);
+      };
+    }
+
+    // Dynamic Landmark Controls Rebuilder
+    function populateDynamicLandmarkControls(landmarks) {
+      if (!landmarks || landmarks.length === 0) return;
+      currentLandmarks = landmarks;
+
+      // 1. Destination Select Dropdown
+      const destSelect = document.getElementById("destSelect");
+      const currentSelected = destSelect.value;
+      destSelect.innerHTML = '<option value="">-- Choose Target Landmark --</option>';
+      landmarks.forEach(lm => {
+        const opt = document.createElement("option");
+        opt.value = lm.id;
+        opt.innerText = `${lm.id}: ${lm.name} (${lm.zone || 'Zone'})`;
+        if (lm.id === currentSelected || (currentSelected === "" && lm.id === "B5")) {
+          opt.selected = true;
+        }
+        destSelect.appendChild(opt);
+      });
+
+      // 2. QR Fallback Chips
+      const qrContainer = document.getElementById("qrChipsContainer");
+      qrContainer.innerHTML = "";
+      landmarks.forEach(lm => {
+        const btn = document.createElement("button");
+        btn.className = "btn-qr-chip";
+        btn.innerText = `${lm.id} ${lm.zone || lm.name.split(' ')[0]}`;
+        btn.onclick = () => scanQR(lm.id);
+        qrContainer.appendChild(btn);
+      });
+
+      // 3. BLE Signal Strength Simulator Buttons
+      const bleContainer = document.getElementById("bleChipsContainer");
+      bleContainer.innerHTML = "";
+      landmarks.forEach(lm => {
+        const btn = document.createElement("button");
+        btn.className = "btn-judge";
+        btn.style.justifyContent = "center";
+        btn.innerText = `Near ${lm.id} (${lm.zone || lm.name}, -52 dBm)`;
+        btn.onclick = () => simulateBle(lm.id, -52.0);
+        bleContainer.appendChild(btn);
+      });
+    }
+
+    // Render / Update UI from snapshot
+    function updateUI(data) {
+      systemState = data;
+      const loc = data.current_location || {};
+      const inst = data.instruction || {};
+      const subs = data.subsystems || {};
+
+      // Sync Landmarks list & dynamic dropdowns
+      if (data.map && data.map.landmarks) {
+        populateDynamicLandmarkControls(data.map.landmarks);
+      }
+
+      // Subsystem pills
+      document.getElementById("pillGps").innerText = subs.gps || "Unavailable";
+      document.getElementById("pillBle").innerText = subs.ble || "Scanning";
+      document.getElementById("pillEsp32").innerText = subs.esp32 || "Standby";
+
+      // Current Location Card
+      const zoneEl = document.getElementById("displayZone");
+      const lmIdEl = document.getElementById("displayLandmarkId");
+      const floorEl = document.getElementById("displayFloor");
+      const coordsEl = document.getElementById("displayCoords");
+      const srcTagEl = document.getElementById("sourceTag");
+
+      zoneEl.innerText = loc.zone || loc.name || "Unknown";
+      lmIdEl.innerText = loc.landmark_id || "--";
+      floorEl.innerText = loc.floor !== undefined ? loc.floor : "0";
+      coordsEl.innerText = (loc.x !== null && loc.x !== undefined) ? `(${loc.x}, ${loc.y})` : "(--, --)";
+
+      // Source Tag styling
+      const src = loc.source || "UNKNOWN";
+      srcTagEl.innerText = src;
+      srcTagEl.className = "source-tag " + ({
+        "BLE": "source-ble",
+        "GPS": "source-gps",
+        "QR": "source-qr",
+        "LAST_KNOWN": "source-last",
+        "UNKNOWN": "source-unknown"
+      }[src] || "source-unknown");
+
+      // Confidence Meter
+      const conf = loc.confidence !== undefined ? loc.confidence : 0.0;
+      const confPct = Math.round(conf * 100);
+      const confLevel = loc.confidence_level || (confPct >= 75 ? "HIGH" : confPct >= 50 ? "MEDIUM" : "LOW");
+
+      const confTextEl = document.getElementById("confidenceText");
+      const confBarEl = document.getElementById("confidenceBar");
+      confTextEl.innerText = `${confPct}% ${confLevel}`;
+      confBarEl.style.width = `${confPct}%`;
+
+      if (confLevel === "HIGH") {
+        confBarEl.style.backgroundColor = "var(--primary)";
+        confBarEl.style.color = "var(--primary)";
+      } else if (confLevel === "MEDIUM") {
+        confBarEl.style.backgroundColor = "var(--accent-amber)";
+        confBarEl.style.color = "var(--accent-amber)";
+      } else {
+        confBarEl.style.backgroundColor = "var(--accent-red)";
+        confBarEl.style.color = "var(--accent-red)";
+      }
+
+      // Safe Mode Alert Display
+      const safeAlertEl = document.getElementById("safeAlert");
+      if (inst.safe_mode || conf < 0.50 || src === "UNKNOWN") {
+        safeAlertEl.style.display = "block";
+      } else {
+        safeAlertEl.style.display = "none";
+      }
+
+      // Navigation Action Card
+      const cmd = inst.command || "STOP";
+      const cmdEl = document.getElementById("actionCommand");
+      const descEl = document.getElementById("actionInstruction");
+      const iconEl = document.getElementById("actionIcon");
+      const navBadgeEl = document.getElementById("navStateBadge");
+
+      cmdEl.innerText = cmd;
+      descEl.innerText = inst.instruction || "";
+      navBadgeEl.innerText = inst.status || "IDLE";
+
+      const iconMap = {
+        "LEFT": "↰",
+        "RIGHT": "↱",
+        "FORWARD": "↑",
+        "ARRIVED": "★",
+        "UNKNOWN": "⚠",
+        "STOP": "■"
+      };
+      iconEl.innerText = iconMap[cmd] || "•";
+
+      // Motor Actuation Simulation
+      const haptic = inst.haptic_profile || {};
+      const leftPwm = haptic.left_pwm || 0;
+      const rightPwm = haptic.right_pwm || 0;
+
+      const mLeftEl = document.getElementById("motorLeft");
+      const mRightEl = document.getElementById("motorRight");
+
+      if (leftPwm > 0) {
+        mLeftEl.className = "motor-disc motor-active";
+        mLeftEl.innerText = leftPwm;
+      } else {
+        mLeftEl.className = "motor-disc";
+        mLeftEl.innerText = "OFF";
+      }
+
+      if (rightPwm > 0) {
+        mRightEl.className = "motor-disc motor-active";
+        mRightEl.innerText = rightPwm;
+      } else {
+        mRightEl.className = "motor-disc";
+        mRightEl.innerText = "OFF";
+      }
+
+      // Render Map SVG
+      renderMap(data.map, data.route, loc.landmark_id, data.destination ? data.destination.id : null);
+    }
+
+    // Auto-Scaling SVG Map Renderer
+    function renderMap(mapData, route, activeLandmark, destLandmark) {
+      if (!mapData || !mapData.landmarks || mapData.landmarks.length === 0) return;
+      const svg = document.getElementById("mapSvg");
+      svg.innerHTML = "";
+
+      const landmarksById = {};
+      mapData.landmarks.forEach(lm => landmarksById[lm.id] = lm);
+
+      // Dynamically calculate coordinate bounds for auto-scaling
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      mapData.landmarks.forEach(lm => {
+        if (lm.x < minX) minX = lm.x;
+        if (lm.x > maxX) maxX = lm.x;
+        if (lm.y < minY) minY = lm.y;
+        if (lm.y > maxY) maxY = lm.y;
+      });
+
+      const spanX = Math.max(1, maxX - minX);
+      const spanY = Math.max(1, maxY - minY);
+
+      // SVG canvas coordinate space: 260 x 160 with 30px padding
+      const svgPadX = 35;
+      const svgPadY = 30;
+      const svgW = 200;
+      const svgH = 100;
+
+      function transformCoords(x, y) {
+        const normX = (x - minX) / spanX;
+        const normY = (y - minY) / spanY;
+        return {
+          cx: svgPadX + (normX * svgW),
+          cy: (svgPadY + svgH) - (normY * svgH) // Invert Y
+        };
+      }
+
+      // Draw Edges
+      (mapData.edges || []).forEach(edge => {
+        const u = landmarksById[edge[0]];
+        const v = landmarksById[edge[1]];
+        if (!u || !v) return;
+
+        const p1 = transformCoords(u.x, u.y);
+        const p2 = transformCoords(v.x, v.y);
+
+        // Check if edge is in route
+        let isRoute = false;
+        if (route && route.length >= 2) {
+          for (let i = 0; i < route.length - 1; i++) {
+            if ((route[i] === edge[0] && route[i+1] === edge[1]) ||
+                (route[i] === edge[1] && route[i+1] === edge[0])) {
+              isRoute = true;
+              break;
+            }
+          }
+        }
+
+        const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+        line.setAttribute("x1", p1.cx);
+        line.setAttribute("y1", p1.cy);
+        line.setAttribute("x2", p2.cx);
+        line.setAttribute("y2", p2.cy);
+        line.setAttribute("stroke", isRoute ? "#10b981" : "rgba(255, 255, 255, 0.15)");
+        line.setAttribute("stroke-width", isRoute ? "4" : "2");
+        if (isRoute) {
+          line.setAttribute("filter", "drop-shadow(0 0 6px rgba(16,185,129,0.8))");
+        }
+        svg.appendChild(line);
+      });
+
+      // Draw Nodes
+      mapData.landmarks.forEach(lm => {
+        const p = transformCoords(lm.x, lm.y);
+        const isCurrent = (lm.id === activeLandmark);
+        const isDest = (lm.id === destLandmark);
+
+        // Outer glow circle if current
+        if (isCurrent) {
+          const glow = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+          glow.setAttribute("cx", p.cx);
+          glow.setAttribute("cy", p.cy);
+          glow.setAttribute("r", "16");
+          glow.setAttribute("fill", "rgba(16, 185, 129, 0.2)");
+          glow.setAttribute("stroke", "#10b981");
+          glow.setAttribute("stroke-width", "1");
+          svg.appendChild(glow);
+        }
+
+        const node = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        node.setAttribute("cx", p.cx);
+        node.setAttribute("cy", p.cy);
+        node.setAttribute("r", "10");
+        node.setAttribute("fill", isCurrent ? "#10b981" : isDest ? "#8b5cf6" : "#1e293b");
+        node.setAttribute("stroke", isCurrent ? "#ffffff" : isDest ? "#c4b5fd" : "rgba(255,255,255,0.4)");
+        node.setAttribute("stroke-width", "2");
+        svg.appendChild(node);
+
+        // Label Text
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("x", p.cx);
+        text.setAttribute("y", p.cy + 22);
+        text.setAttribute("fill", "#cbd5e1");
+        text.setAttribute("font-size", "9px");
+        text.setAttribute("font-weight", "600");
+        text.setAttribute("text-anchor", "middle");
+        text.textContent = `${lm.id} (${lm.zone || lm.name})`;
+        svg.appendChild(text);
+      });
+
+      // Update route summary text
+      const summaryEl = document.getElementById("routeSummary");
+      if (route && route.length > 0) {
+        summaryEl.innerText = "Route: " + route.join(" → ");
+      } else {
+        summaryEl.innerText = "Route: Direct / None";
+      }
+    }
+
+    // Logger
+    function log(msg, type = "info") {
+      const box = document.getElementById("terminalLog");
+      const d = new Date();
+      const timeStr = d.toTimeString().split(' ')[0];
+      const div = document.createElement("div");
+
+      let colorClass = "";
+      if (type === "warn") colorClass = "log-warn";
+      if (type === "err") colorClass = "log-err";
+      if (type === "sys") colorClass = "log-sys";
+
+      div.innerHTML = `<span class="log-time">[${timeStr}]</span> <span class="${colorClass}">${msg}</span>`;
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    // API Interactions
+    async function runPreset(presetKey) {
+      log(`Triggering Judge Test Preset: ${presetKey}`, "sys");
+      try {
+        const res = await fetch("/api/indoor/test-preset", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ preset: presetKey })
+        });
+        const data = await res.json();
+        log(`Test active: ${data.description}`, "sys");
+      } catch (e) {
+        log(`Failed to trigger preset: ${e}`, "err");
+      }
+    }
+
+    async function changeDestination() {
+      const select = document.getElementById("destSelect");
+      const dest = select.value;
+      if (!dest) return;
+      try {
+        const res = await fetch("/api/indoor/destination", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ destination: dest })
+        });
+        const data = await res.json();
+        log(`Target set to ${dest}. Route: ${data.route ? data.route.join(' → ') : 'None'}`);
+      } catch (e) {
+        log(`Error setting destination: ${e}`, "err");
+      }
+    }
+
+    async function scanQR(landmarkId) {
+      log(`Scanned physical QR marker: ${landmarkId}`, "sys");
+      try {
+        const res = await fetch("/api/indoor/qr-scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ payload: landmarkId })
+        });
+        const data = await res.json();
+        log(`QR Recovery Success: Position reset to ${data.location.name} (Confidence: 100%)`, "sys");
+      } catch (e) {
+        log(`QR Scan error: ${e}`, "err");
+      }
+    }
+
+    function submitManualQR() {
+      const input = document.getElementById("manualQrInput");
+      if (input.value.trim()) {
+        scanQR(input.value.trim());
+        input.value = "";
+      }
+    }
+
+    async function simulateBle(landmarkId, rssiVal) {
+      const readings = {};
+      readings[landmarkId] = rssiVal;
+      // Add background readings for adjacent landmarks
+      if (landmarkId === "B2") { readings["B1"] = -78.0; readings["B3"] = -81.0; }
+      if (landmarkId === "B4") { readings["B2"] = -79.0; readings["B5"] = -82.0; }
+
+      log(`Simulated BLE scan: ${JSON.stringify(readings)}`);
+      try {
+        await fetch("/api/indoor/ble-scan", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ readings: readings })
+        });
+      } catch (e) {
+        log(`BLE scan error: ${e}`, "err");
+      }
+    }
+
+    async function sendManualCommand(cmd) {
+      log(`Manual ESP32 test command: ${cmd}`);
+      try {
+        const res = await fetch("/api/indoor/esp32/command", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ command: cmd })
+        });
+        const data = await res.json();
+        log(`ESP32 response: ${data.success ? 'Delivered' : 'Failed'} (${data.command})`);
+      } catch (e) {
+        log(`Hardware test error: ${e}`, "err");
+      }
+    }
+
+    async function saveEsp32Ip() {
+      const ip = document.getElementById("esp32IpInput").value.trim();
+      if (!ip) return;
+      try {
+        const res = await fetch("/api/indoor/esp32/config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ip: ip })
+        });
+        const data = await res.json();
+        log(`Updated ESP32 IP to ${ip}. Connection: ${data.connected ? 'ONLINE' : 'OFFLINE'}`, "sys");
+      } catch (e) {
+        log(`Error saving ESP32 IP: ${e}`, "err");
+      }
+    }
+
+    async function resetAll() {
+      try {
+        await fetch("/api/indoor/reset", { method: "POST" });
+        log("System state reset to ground zero.", "warn");
+      } catch (e) {
+        log(`Reset error: ${e}`, "err");
+      }
+    }
+
+    // Modal Operations
+    function openLandmarkModal() {
+      const tbody = document.getElementById("landmarkTableBody");
+      tbody.innerHTML = "";
+      currentLandmarks.forEach((lm, idx) => {
+        appendTableRow(lm, idx);
+      });
+      document.getElementById("landmarkModal").style.display = "flex";
+    }
+
+    function closeLandmarkModal() {
+      document.getElementById("landmarkModal").style.display = "none";
+    }
+
+    function appendTableRow(lm, idx) {
+      const tbody = document.getElementById("landmarkTableBody");
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><input type="text" class="lm-id" value="${lm.id || ''}" style="width: 55px;" /></td>
+        <td><input type="text" class="lm-name" value="${lm.name || ''}" /></td>
+        <td><input type="text" class="lm-zone" value="${lm.zone || ''}" /></td>
+        <td><input type="number" class="lm-floor" value="${lm.floor !== undefined ? lm.floor : 0}" style="width: 55px;" /></td>
+        <td><input type="number" step="0.5" class="lm-x" value="${lm.x !== undefined ? lm.x : 0}" style="width: 60px;" /></td>
+        <td><input type="number" step="0.5" class="lm-y" value="${lm.y !== undefined ? lm.y : 0}" style="width: 60px;" /></td>
+        <td><button class="btn-table-action" onclick="this.closest('tr').remove()">&times;</button></td>
+      `;
+      tbody.appendChild(tr);
+    }
+
+    function addLandmarkRow() {
+      const nextId = "B" + (document.querySelectorAll("#landmarkTableBody tr").length + 1);
+      appendTableRow({ id: nextId, name: "New Area", zone: "Zone", floor: 0, x: 0, y: 0 });
+    }
+
+    async function saveLandmarkSettings() {
+      const rows = document.querySelectorAll("#landmarkTableBody tr");
+      const updatedList = [];
+      rows.forEach(r => {
+        const id = r.querySelector(".lm-id").value.trim().toUpperCase();
+        const name = r.querySelector(".lm-name").value.trim();
+        const zone = r.querySelector(".lm-zone").value.trim();
+        const floor = parseInt(r.querySelector(".lm-floor").value, 10) || 0;
+        const x = parseFloat(r.querySelector(".lm-x").value) || 0.0;
+        const y = parseFloat(r.querySelector(".lm-y").value) || 0.0;
+        if (id) {
+          updatedList.push({ id, name, zone, floor, x, y });
+        }
+      });
+
+      if (updatedList.length === 0) {
+        alert("Landmarks list cannot be empty.");
+        return;
+      }
+
+      log(`Saving ${updatedList.length} updated landmarks...`, "sys");
+      try {
+        const res = await fetch("/api/indoor/landmarks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ landmarks: updatedList })
+        });
+        const data = await res.json();
+        log(`Landmarks saved successfully (${data.count} active)!`, "sys");
+        closeLandmarkModal();
+      } catch (e) {
+        log(`Failed to save landmarks: ${e}`, "err");
+        alert("Error saving landmarks: " + e);
+      }
+    }
+
+    async function resetLandmarksToDefault() {
+      if (!confirm("Reset all indoor landmarks back to the default B1 - B5 Hackathon specification?")) return;
+      try {
+        const res = await fetch("/api/indoor/landmarks/reset", { method: "POST" });
+        const data = await res.json();
+        log("Landmarks reset to default B1-B5.", "warn");
+        openLandmarkModal();
+      } catch (e) {
+        log(`Reset error: ${e}`, "err");
+      }
+    }
+
+    // Startup
+    window.addEventListener("DOMContentLoaded", () => {
+      connectWS();
+      fetch("/api/indoor/status")
+        .then(r => r.json())
+        .then(data => updateUI(data))
+        .catch(e => console.error("Initial fetch error", e));
+    });
+  </script>
+</body>
+</html>
